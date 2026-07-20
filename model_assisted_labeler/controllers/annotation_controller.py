@@ -28,6 +28,10 @@ class AnnotationController:
     It contains no GUI-specific code.
     """
 
+    MODEL_SOURCE = "model"
+    MODEL_EDITED_SOURCE = "model_edited"
+    EDITED_SOURCE = "edited"
+
     def __init__(
         self,
         session_builder: AnnotationSessionBuilder,
@@ -207,7 +211,7 @@ class AnnotationController:
         retained_annotations = [
             box
             for box in image_record.annotations
-            if box.source != "model"
+            if box.source != self.MODEL_SOURCE
         ]
 
         image_record.replace_annotations(
@@ -293,9 +297,12 @@ class AnnotationController:
             class_id=updated_box.class_id,
         )
 
+        existing_box = image_record.annotations[index]
+
         edited_box = replace(
             updated_box,
-            source="edited",
+            confidence=existing_box.confidence,
+            source=self._edited_source_for(existing_box.source),
         )
 
         image_record.update_annotation(
@@ -329,7 +336,7 @@ class AnnotationController:
         updated_box = replace(
             existing_box,
             class_id=class_id,
-            source="edited",
+            source=self._edited_source_for(existing_box.source),
         )
 
         image_record.update_annotation(
@@ -443,6 +450,24 @@ class AnnotationController:
             return False
 
         return self._session.has_unsaved_changes()
+
+    def _edited_source_for(
+        self,
+        existing_source: str,
+    ) -> str:
+        """
+        Preserve whether an edited annotation began as a model result.
+
+        This allows the UI to distinguish untouched model predictions
+        from predictions that were corrected by the user.
+        """
+        if existing_source in {
+            self.MODEL_SOURCE,
+            self.MODEL_EDITED_SOURCE,
+        }:
+            return self.MODEL_EDITED_SOURCE
+
+        return self.EDITED_SOURCE
 
     def _require_session(self) -> AnnotationSession:
         """

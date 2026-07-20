@@ -7,6 +7,7 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -60,7 +61,10 @@ class MainWindow(QMainWindow):
         self._next_button = QPushButton("Next")
         self._save_button = QPushButton("Save")
         self._save_next_button = QPushButton("Save && Next")
-        self._predict_button = QPushButton("Predict")
+        self._predict_button = QPushButton("Predict / Refresh")
+        self._auto_predict_button = QPushButton(
+            "Auto Predict: Off"
+        )
         self._fit_button = QPushButton("Fit")
 
         self._load_model_action = QAction(
@@ -96,7 +100,7 @@ class MainWindow(QMainWindow):
             self,
         )
         self._predict_action = QAction(
-            "Predict Current Image",
+            "Predict / Refresh Current Image",
             self,
         )
         self._replace_predictions_action = QAction(
@@ -122,6 +126,7 @@ class MainWindow(QMainWindow):
 
         self._configure_window()
         self._configure_actions()
+        self._configure_buttons()
         self._build_menu_bar()
         self._build_tool_bar()
         self._build_central_widget()
@@ -133,9 +138,7 @@ class MainWindow(QMainWindow):
         self,
         event: QCloseEvent,
     ) -> None:
-        """
-        Confirm unsaved changes before closing the application.
-        """
+        """Confirm unsaved changes before closing the application."""
         if not self._confirm_unsaved_changes():
             event.ignore()
             return
@@ -143,17 +146,13 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _configure_window(self) -> None:
-        """
-        Configure basic main-window properties.
-        """
+        """Configure basic main-window properties."""
         self.setWindowTitle(self.WINDOW_TITLE)
         self.resize(1280, 800)
         self.setMinimumSize(900, 600)
 
     def _configure_actions(self) -> None:
-        """
-        Assign shortcuts and descriptive status tips.
-        """
+        """Assign shortcuts and descriptive status tips."""
         self._load_model_action.setShortcut(
             QKeySequence("Ctrl+M")
         )
@@ -200,6 +199,9 @@ class MainWindow(QMainWindow):
         self._predict_action.setShortcut(
             QKeySequence("P")
         )
+        self._predict_action.setStatusTip(
+            "Run or refresh model predictions for the current image."
+        )
 
         self._delete_selected_action.setShortcut(
             QKeySequence.StandardKey.Delete
@@ -213,10 +215,20 @@ class MainWindow(QMainWindow):
             QKeySequence.StandardKey.Quit
         )
 
+    def _configure_buttons(self) -> None:
+        """Configure button-specific behavior and descriptions."""
+        self._predict_button.setToolTip(
+            "Run the model now. Untouched predictions are refreshed."
+        )
+
+        self._auto_predict_button.setCheckable(True)
+        self._auto_predict_button.setToolTip(
+            "When enabled, run prediction whenever another image "
+            "is loaded."
+        )
+
     def _build_menu_bar(self) -> None:
-        """
-        Create the application menus.
-        """
+        """Create the application menus."""
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(self._load_model_action)
         file_menu.addAction(self._open_session_action)
@@ -247,9 +259,7 @@ class MainWindow(QMainWindow):
         )
 
     def _build_tool_bar(self) -> None:
-        """
-        Create a compact toolbar for common actions.
-        """
+        """Create a compact toolbar for common actions."""
         toolbar = QToolBar("Main", self)
         toolbar.setMovable(False)
 
@@ -265,9 +275,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
     def _build_central_widget(self) -> None:
-        """
-        Arrange session information, canvas, class panel, and controls.
-        """
+        """Arrange information, canvas, class panel, and controls."""
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
 
@@ -285,11 +293,22 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([1000, 260])
 
+        prediction_controls_layout = QVBoxLayout()
+        prediction_controls_layout.setSpacing(4)
+        prediction_controls_layout.addWidget(
+            self._predict_button
+        )
+        prediction_controls_layout.addWidget(
+            self._auto_predict_button
+        )
+
         controls_layout = QHBoxLayout()
         controls_layout.addWidget(self._previous_button)
         controls_layout.addWidget(self._next_button)
         controls_layout.addStretch(1)
-        controls_layout.addWidget(self._predict_button)
+        controls_layout.addLayout(
+            prediction_controls_layout
+        )
         controls_layout.addWidget(self._fit_button)
         controls_layout.addStretch(1)
         controls_layout.addWidget(self._save_button)
@@ -302,9 +321,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
     def _build_status_bar(self) -> None:
-        """
-        Create and install the application status bar.
-        """
+        """Create and install the application status bar."""
         status_bar = QStatusBar(self)
         self.setStatusBar(status_bar)
 
@@ -313,9 +330,7 @@ class MainWindow(QMainWindow):
         )
 
     def _connect_signals(self) -> None:
-        """
-        Connect actions, buttons, and child-widget signals.
-        """
+        """Connect actions, buttons, and child-widget signals."""
         self._load_model_action.triggered.connect(
             self._load_model
         )
@@ -374,6 +389,9 @@ class MainWindow(QMainWindow):
         self._predict_button.clicked.connect(
             self._predict_current_image
         )
+        self._auto_predict_button.toggled.connect(
+            self._handle_auto_predict_toggled
+        )
         self._fit_button.clicked.connect(
             self._canvas.fit_to_image
         )
@@ -402,12 +420,7 @@ class MainWindow(QMainWindow):
         )
 
     def _load_model(self) -> None:
-        """
-        Ask the user for a model file and load it.
-
-        Loading a different model closes the current annotation
-        session because the model defines the session's class mapping.
-        """
+        """Ask the user for a model file and load it."""
         model_filename, _ = QFileDialog.getOpenFileName(
             self,
             "Load Detection Model",
@@ -440,6 +453,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Loading detection model..."
             )
+            QApplication.processEvents()
 
             self._controller.load_model(
                 Path(model_filename)
@@ -458,9 +472,7 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _open_session(self) -> None:
-        """
-        Select image and label directories and open a session.
-        """
+        """Select image and label directories and open a session."""
         if not self._controller.model_is_loaded:
             self._show_error(
                 "Load a detection model before opening a session."
@@ -489,9 +501,7 @@ class MainWindow(QMainWindow):
         recursive_choice = QMessageBox.question(
             self,
             "Search Subdirectories",
-            (
-                "Should image discovery include subdirectories?"
-            ),
+            "Should image discovery include subdirectories?",
             (
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No
@@ -508,6 +518,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Opening annotation session..."
             )
+            QApplication.processEvents()
 
             self._controller.open_session(
                 image_directory=Path(
@@ -521,7 +532,9 @@ class MainWindow(QMainWindow):
             )
 
             self._class_panel.refresh_classes()
-            self._canvas.display_current_image()
+            prediction_count = (
+                self._display_current_image_with_auto_prediction()
+            )
 
         except Exception as error:
             self._show_error(str(error))
@@ -535,6 +548,14 @@ class MainWindow(QMainWindow):
                 "Session opened, but no supported images were found.",
                 7000,
             )
+        elif prediction_count is not None:
+            self.statusBar().showMessage(
+                (
+                    "Annotation session opened. Auto prediction "
+                    f"added {prediction_count} box(es)."
+                ),
+                5000,
+            )
         else:
             self.statusBar().showMessage(
                 "Annotation session opened.",
@@ -544,9 +565,7 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _close_session(self) -> None:
-        """
-        Close the active annotation session.
-        """
+        """Close the active annotation session."""
         if not self._controller.has_session:
             return
 
@@ -573,9 +592,7 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _save_current_image(self) -> None:
-        """
-        Save annotations for the current image.
-        """
+        """Save annotations for the current image."""
         try:
             self._controller.save_current_image()
 
@@ -591,9 +608,7 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _save_all_changes(self) -> None:
-        """
-        Save every dirty image in the current session.
-        """
+        """Save every dirty image in the current session."""
         try:
             saved_count = (
                 self._controller.save_all_changes()
@@ -611,9 +626,7 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _save_and_next(self) -> None:
-        """
-        Save the current image and move to the next one.
-        """
+        """Save the current image and move to the next one."""
         try:
             current_image = self._controller.current_image
 
@@ -627,7 +640,14 @@ class MainWindow(QMainWindow):
             )
 
             self._controller.save_and_next()
-            self._canvas.display_current_image()
+
+            if was_last_image:
+                self._canvas.display_current_image()
+                prediction_count = None
+            else:
+                prediction_count = (
+                    self._display_current_image_with_auto_prediction()
+                )
 
         except Exception as error:
             self._show_error(str(error))
@@ -636,6 +656,14 @@ class MainWindow(QMainWindow):
         if was_last_image:
             self.statusBar().showMessage(
                 "Current image saved. Already at the final image.",
+                5000,
+            )
+        elif prediction_count is not None:
+            self.statusBar().showMessage(
+                (
+                    "Current image saved. Auto prediction added "
+                    f"{prediction_count} box(es)."
+                ),
                 5000,
             )
         else:
@@ -647,46 +675,55 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _previous_image(self) -> None:
-        """
-        Move to the previous image without automatically saving.
-        """
+        """Move to the previous image without automatically saving."""
         try:
             self._controller.previous_image()
-            self._canvas.display_current_image()
+            prediction_count = (
+                self._display_current_image_with_auto_prediction()
+            )
 
         except Exception as error:
             self._show_error(str(error))
             return
+
+        if prediction_count is not None:
+            self.statusBar().showMessage(
+                (
+                    "Auto prediction added "
+                    f"{prediction_count} box(es)."
+                ),
+                4000,
+            )
 
         self._refresh_interface()
 
     def _next_image(self) -> None:
-        """
-        Move to the next image without automatically saving.
-        """
+        """Move to the next image without automatically saving."""
         try:
             self._controller.next_image()
-            self._canvas.display_current_image()
+            prediction_count = (
+                self._display_current_image_with_auto_prediction()
+            )
 
         except Exception as error:
             self._show_error(str(error))
             return
 
+        if prediction_count is not None:
+            self.statusBar().showMessage(
+                (
+                    "Auto prediction added "
+                    f"{prediction_count} box(es)."
+                ),
+                4000,
+            )
+
         self._refresh_interface()
 
     def _predict_current_image(self) -> None:
-        """
-        Add model predictions while preserving manual and edited boxes.
-        """
+        """Run or refresh model predictions for the current image."""
         try:
-            self.statusBar().showMessage(
-                "Running model prediction..."
-            )
-
-            predictions = (
-                self._controller.predict_current_image()
-            )
-
+            predictions = self._run_prediction()
             self._canvas.refresh_annotations()
 
         except Exception as error:
@@ -695,16 +732,76 @@ class MainWindow(QMainWindow):
             return
 
         self.statusBar().showMessage(
-            f"Added {len(predictions)} prediction(s).",
+            f"Prediction refreshed with {len(predictions)} box(es).",
             5000,
         )
 
         self._refresh_interface()
 
+    def _run_prediction(self) -> list:
+        """Run prediction while displaying immediate progress text."""
+        self.statusBar().showMessage(
+            "Running model prediction..."
+        )
+        QApplication.processEvents()
+
+        return self._controller.predict_current_image()
+
+    def _display_current_image_with_auto_prediction(
+        self,
+    ) -> int | None:
+        """
+        Display the current image and optionally predict before drawing.
+
+        Returns the number of automatic predictions, or None when
+        automatic prediction is disabled or prediction fails.
+        """
+        prediction_count: int | None = None
+
+        if (
+            self._auto_predict_button.isChecked()
+            and self._controller.model_is_loaded
+            and self._controller.current_image is not None
+        ):
+            try:
+                predictions = self._run_prediction()
+                prediction_count = len(predictions)
+
+            except Exception as error:
+                self._show_error(str(error))
+
+        self._canvas.display_current_image()
+        return prediction_count
+
+    def _handle_auto_predict_toggled(
+        self,
+        checked: bool,
+    ) -> None:
+        """Update the toggle label and apply it to the current image."""
+        if checked:
+            self._auto_predict_button.setText(
+                "Auto Predict: On"
+            )
+            self.statusBar().showMessage(
+                "Automatic prediction enabled.",
+                3000,
+            )
+
+            if self._controller.current_image is not None:
+                self._predict_current_image()
+        else:
+            self._auto_predict_button.setText(
+                "Auto Predict: Off"
+            )
+            self.statusBar().showMessage(
+                "Automatic prediction disabled.",
+                3000,
+            )
+
+        self._refresh_interface()
+
     def _replace_with_predictions(self) -> None:
-        """
-        Replace every current annotation with model predictions.
-        """
+        """Replace every current annotation with model predictions."""
         image_record = self._controller.current_image
 
         if image_record is None:
@@ -732,6 +829,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Replacing annotations with predictions..."
             )
+            QApplication.processEvents()
 
             predictions = (
                 self._controller
@@ -756,15 +854,10 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _clear_current_annotations(self) -> None:
-        """
-        Remove all annotations from the current image after confirmation.
-        """
+        """Remove all current annotations after confirmation."""
         image_record = self._controller.current_image
 
-        if image_record is None:
-            return
-
-        if not image_record.annotations:
+        if image_record is None or not image_record.annotations:
             return
 
         confirmation = QMessageBox.question(
@@ -800,9 +893,7 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _delete_selected_annotation(self) -> None:
-        """
-        Delete the box selected on the canvas.
-        """
+        """Delete the box selected on the canvas."""
         if self._canvas.delete_selected_annotation():
             self.statusBar().showMessage(
                 "Selected annotation deleted.",
@@ -815,16 +906,12 @@ class MainWindow(QMainWindow):
         self,
         annotation_index: int,
     ) -> None:
-        """
-        Refresh labels and controls after an annotation changes.
-        """
+        """Refresh labels and controls after an annotation changes."""
         del annotation_index
         self._refresh_interface()
 
     def _refresh_interface(self) -> None:
-        """
-        Refresh labels and enable controls based on application state.
-        """
+        """Refresh labels and controls based on application state."""
         has_model = self._controller.model_is_loaded
         has_session = self._controller.has_session
         image_record = self._controller.current_image
@@ -934,6 +1021,7 @@ class MainWindow(QMainWindow):
         self._predict_button.setEnabled(
             self._predict_action.isEnabled()
         )
+        self._auto_predict_button.setEnabled(has_model)
         self._fit_button.setEnabled(
             self._fit_action.isEnabled()
         )
@@ -953,11 +1041,7 @@ class MainWindow(QMainWindow):
             )
 
     def _confirm_unsaved_changes(self) -> bool:
-        """
-        Ask whether unsaved changes should be saved or discarded.
-
-        Returns True when the requested operation may continue.
-        """
+        """Ask whether unsaved changes should be saved or discarded."""
         if not self._controller.has_unsaved_changes():
             return True
 
@@ -996,9 +1080,7 @@ class MainWindow(QMainWindow):
         self,
         message: str,
     ) -> None:
-        """
-        Display an error dialog and update the status bar.
-        """
+        """Display an error dialog and update the status bar."""
         cleaned_message = message.strip()
 
         if not cleaned_message:

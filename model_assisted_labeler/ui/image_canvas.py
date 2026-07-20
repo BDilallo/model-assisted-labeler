@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
@@ -43,6 +44,9 @@ class ImageCanvas(QGraphicsView):
     ZOOM_FACTOR = 1.15
     MINIMUM_ZOOM = 0.05
     MAXIMUM_ZOOM = 40.0
+
+    MODEL_PREDICTION_COLOR = QColor(45, 130, 255)
+    EDITED_MODEL_COLOR = QColor(235, 70, 70)
 
     def __init__(
         self,
@@ -267,6 +271,17 @@ class ImageCanvas(QGraphicsView):
                     "in the current session."
                 )
 
+            image_record = self._controller.current_image
+
+            if image_record is None:
+                raise RuntimeError(
+                    "No image is currently selected."
+                )
+
+            stored_box = image_record.annotations[
+                annotation_index
+            ]
+
             annotation_item = self._annotation_items.get(
                 annotation_index
             )
@@ -275,6 +290,9 @@ class ImageCanvas(QGraphicsView):
                 annotation_item.set_class(
                     class_id=class_id,
                     class_name=class_name,
+                )
+                annotation_item.set_color(
+                    self._color_for_annotation(stored_box)
                 )
 
         except Exception as error:
@@ -304,7 +322,7 @@ class ImageCanvas(QGraphicsView):
         view_position = event.position().toPoint()
         clicked_item = self.itemAt(view_position)
 
-        if isinstance(clicked_item, BoundingBoxItem):
+        if self._find_bounding_box_item(clicked_item) is not None:
             super().mousePressEvent(event)
             return
 
@@ -613,8 +631,8 @@ class ImageCanvas(QGraphicsView):
             geometry_changed_callback=(
                 self._handle_item_geometry_changed
             ),
-            color=self._color_for_class(
-                bounding_box.class_id
+            color=self._color_for_annotation(
+                bounding_box
             ),
         )
 
@@ -709,6 +727,9 @@ class ImageCanvas(QGraphicsView):
                 annotation_item.update_from_bounding_box(
                     stored_box
                 )
+                annotation_item.set_color(
+                    self._color_for_annotation(stored_box)
+                )
 
         except Exception as error:
             self.error_occurred.emit(str(error))
@@ -716,6 +737,28 @@ class ImageCanvas(QGraphicsView):
             return
 
         self.annotation_updated.emit(annotation_index)
+
+    @staticmethod
+    def _find_bounding_box_item(
+        graphics_item: QGraphicsItem | None,
+    ) -> BoundingBoxItem | None:
+        """
+        Return a bounding box when an item or one of its children
+        was clicked.
+
+        Resize controls are child graphics items, so checking parent
+        items prevents the canvas from treating a handle click as the
+        start of a brand-new annotation.
+        """
+        current_item = graphics_item
+
+        while current_item is not None:
+            if isinstance(current_item, BoundingBoxItem):
+                return current_item
+
+            current_item = current_item.parentItem()
+
+        return None
 
     def _point_is_inside_image(
         self,
@@ -756,6 +799,28 @@ class ImageCanvas(QGraphicsView):
         self._drawing_preview = None
         self._drawing_start = None
         self._is_drawing = False
+
+    @classmethod
+    def _color_for_annotation(
+        cls,
+        bounding_box: BoundingBox,
+    ) -> QColor:
+        """Return a color based on annotation origin and edit state."""
+        if (
+            bounding_box.source
+            == AnnotationController.MODEL_SOURCE
+        ):
+            return QColor(cls.MODEL_PREDICTION_COLOR)
+
+        if (
+            bounding_box.source
+            == AnnotationController.MODEL_EDITED_SOURCE
+        ):
+            return QColor(cls.EDITED_MODEL_COLOR)
+
+        return cls._color_for_class(
+            bounding_box.class_id
+        )
 
     @staticmethod
     def _color_for_class(

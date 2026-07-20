@@ -1,46 +1,33 @@
+from __future__ import annotations
+
 from collections.abc import Callable
-from enum import Enum, auto
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QCursor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsRectItem,
-    QGraphicsSceneHoverEvent,
     QGraphicsSceneMouseEvent,
     QStyleOptionGraphicsItem,
     QWidget,
 )
 
+from model_assisted_labeler.geometry.bounding_box_geometry import (
+    BoundingBoxGeometry,
+    ResizeHandle,
+)
 from model_assisted_labeler.models.bounding_box import BoundingBox
-
-
-class ResizeHandle(Enum):
-    """
-    Identifies which corner of a bounding box is being resized.
-    """
-
-    TOP_LEFT = auto()
-    TOP_RIGHT = auto()
-    BOTTOM_LEFT = auto()
-    BOTTOM_RIGHT = auto()
+from model_assisted_labeler.ui.resize_handle_item import ResizeHandleItem
 
 
 class BoundingBoxItem(QGraphicsRectItem):
     """
-    Displays one editable bounding box inside a QGraphicsScene.
+    Displays and coordinates one editable annotation rectangle.
 
-    The item supports:
-
-    - Selection
-    - Dragging
-    - Corner resizing
-    - Image-boundary enforcement
-    - Conversion back into a BoundingBox
-    - Notification when its geometry changes
+    Rendering and mouse-event coordination remain in this UI class.
+    Movement and resize calculations are delegated to the geometry layer.
     """
 
-    HANDLE_SIZE = 10.0
     MINIMUM_BOX_SIZE = 4.0
 
     def __init__(
@@ -72,35 +59,42 @@ class BoundingBoxItem(QGraphicsRectItem):
                 "BoundingBoxItem requires a valid BoundingBox."
             )
 
+        cleaned_class_name = class_name.strip()
+
+        if not cleaned_class_name:
+            raise ValueError("Class name cannot be empty.")
+
         self._annotation_index = annotation_index
         self._bounding_box = bounding_box
-        self._class_name = class_name
+        self._class_name = cleaned_class_name
+        self._geometry_changed_callback = geometry_changed_callback
 
-        self._image_bounds = QRectF(
-            0.0,
-            0.0,
-            float(image_width),
-            float(image_height),
+        self._image_bounds = BoundingBoxGeometry(
+            left=0.0,
+            top=0.0,
+            right=float(image_width),
+            bottom=float(image_height),
         )
 
-        self._geometry_changed_callback = (
-            geometry_changed_callback
-        )
+        self._geometry_before_interaction: (
+            BoundingBoxGeometry | None
+        ) = None
 
-        self._active_handle: ResizeHandle | None = None
-        self._interaction_start_rect: QRectF | None = None
-        self._geometry_before_interaction: QRectF | None = None
+        self._resize_start_geometry: (
+            BoundingBoxGeometry | None
+        ) = None
 
+        self._active_resize_handle: ResizeHandle | None = None
         self._applying_geometry = False
 
         if color is None:
             color = QColor(0, 220, 100)
 
-        pen = QPen(color)
-        pen.setWidthF(2.0)
-        pen.setCosmetic(True)
+        box_pen = QPen(color)
+        box_pen.setWidthF(3.0)
+        box_pen.setCosmetic(True)
 
-        self.setPen(pen)
+        self.setPen(box_pen)
         self.setBrush(Qt.BrushStyle.NoBrush)
 
         self.setFlags(
@@ -110,15 +104,20 @@ class BoundingBoxItem(QGraphicsRectItem):
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
 
-        self.setAcceptHoverEvents(True)
+        self._resize_handles = {
+            handle: ResizeHandleItem(
+                handle=handle,
+                color=color,
+                parent=self,
+            )
+            for handle in ResizeHandle
+        }
 
         self.update_from_bounding_box(bounding_box)
 
     @property
     def annotation_index(self) -> int:
-        """
-        Return the annotation's position in the ImageRecord list.
-        """
+        """Return the annotation's position in the image record."""
         return self._annotation_index
 
     @property
@@ -130,9 +129,7 @@ class BoundingBoxItem(QGraphicsRectItem):
         self,
         annotation_index: int,
     ) -> None:
-        """
-        Update the annotation index associated with the item.
-        """
+        """Update the annotation index associated with the item."""
         if annotation_index < 0:
             raise ValueError(
                 "Annotation index cannot be negative."
@@ -140,14 +137,27 @@ class BoundingBoxItem(QGraphicsRectItem):
 
         self._annotation_index = annotation_index
 
+    def set_color(
+        self,
+        color: QColor,
+    ) -> None:
+        """Update the rectangle and resize-handle colors."""
+        box_pen = QPen(color)
+        box_pen.setWidthF(3.0)
+        box_pen.setCosmetic(True)
+        self.setPen(box_pen)
+
+        for handle_item in self._resize_handles.values():
+            handle_item.set_color(color)
+
+        self.update()
+
     def set_class(
         self,
         class_id: int,
         class_name: str,
     ) -> None:
-        """
-        Change the item's class ID and displayed class name.
-        """
+        """Change the item's class ID and displayed class name."""
         if class_id < 0:
             raise ValueError("Class ID cannot be negative.")
 
@@ -158,24 +168,17 @@ class BoundingBoxItem(QGraphicsRectItem):
 
         self._bounding_box.class_id = class_id
         self._class_name = cleaned_name
-
         self.update()
 
     def update_from_bounding_box(
         self,
         bounding_box: BoundingBox,
     ) -> None:
-        """
-        Replace the displayed geometry using a BoundingBox.
-
-        This is used when the canvas is refreshed from application
-        state rather than from a direct mouse interaction.
-        """
+        """Replace the displayed geometry using annotation data."""
         bounding_box.normalize_coordinates()
-
         bounding_box.clamp(
-            image_width=int(self._image_bounds.width()),
-            image_height=int(self._image_bounds.height()),
+            image_width=int(self._image_bounds.width),
+            image_height=int(self._image_bounds.height),
         )
 
         if not bounding_box.is_valid():
@@ -183,29 +186,31 @@ class BoundingBoxItem(QGraphicsRectItem):
                 "Cannot display an invalid bounding box."
             )
 
+        geometry = BoundingBoxGeometry(
+            left=bounding_box.x1,
+            top=bounding_box.y1,
+            right=bounding_box.x2,
+            bottom=bounding_box.y2,
+        ).clamp_to_bounds(self._image_bounds)
+
+        if not geometry.is_valid():
+            raise ValueError(
+                "Cannot display collapsed bounding-box geometry."
+            )
+
         self._bounding_box = bounding_box
-
-        scene_rectangle = QRectF(
-            bounding_box.x1,
-            bounding_box.y1,
-            bounding_box.width,
-            bounding_box.height,
-        )
-
-        self._apply_scene_rectangle(scene_rectangle)
+        self._apply_geometry(geometry)
 
     def to_bounding_box(self) -> BoundingBox:
-        """
-        Convert the item's current scene geometry into annotation data.
-        """
-        scene_rectangle = self._current_scene_rectangle()
+        """Convert the current scene geometry into annotation data."""
+        geometry = self._current_geometry()
 
         return BoundingBox(
             class_id=self._bounding_box.class_id,
-            x1=scene_rectangle.left(),
-            y1=scene_rectangle.top(),
-            x2=scene_rectangle.right(),
-            y2=scene_rectangle.bottom(),
+            x1=geometry.left,
+            y1=geometry.top,
+            x2=geometry.right,
+            y2=geometry.bottom,
             confidence=self._bounding_box.confidence,
             source=self._bounding_box.source,
         )
@@ -216,20 +221,20 @@ class BoundingBoxItem(QGraphicsRectItem):
         option: QStyleOptionGraphicsItem,
         widget: QWidget | None = None,
     ) -> None:
-        """
-        Draw the rectangle, class name, and resize handles.
-        """
-        super().paint(painter, option, widget)
+        """Draw the rectangle and its class label."""
+        del option, widget
 
         painter.save()
-
         painter.setPen(self.pen())
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.rect())
+
         painter.drawText(
             self.rect().adjusted(
+                6.0,
                 4.0,
-                2.0,
+                -6.0,
                 -4.0,
-                -2.0,
             ),
             (
                 Qt.AlignmentFlag.AlignLeft
@@ -238,410 +243,183 @@ class BoundingBoxItem(QGraphicsRectItem):
             self._class_name,
         )
 
-        if self.isSelected():
-            painter.setBrush(self.pen().color())
-            painter.setPen(Qt.PenStyle.NoPen)
-
-            for handle_rectangle in self._handle_rectangles().values():
-                painter.drawRect(handle_rectangle)
-
         painter.restore()
-
-    def hoverMoveEvent(
-        self,
-        event: QGraphicsSceneHoverEvent,
-    ) -> None:
-        """
-        Change the cursor when hovering over a resize handle.
-        """
-        handle = self._handle_at(event.pos())
-
-        if handle in {
-            ResizeHandle.TOP_LEFT,
-            ResizeHandle.BOTTOM_RIGHT,
-        }:
-            self.setCursor(
-                QCursor(
-                    Qt.CursorShape.SizeFDiagCursor
-                )
-            )
-
-        elif handle in {
-            ResizeHandle.TOP_RIGHT,
-            ResizeHandle.BOTTOM_LEFT,
-        }:
-            self.setCursor(
-                QCursor(
-                    Qt.CursorShape.SizeBDiagCursor
-                )
-            )
-
-        else:
-            self.setCursor(
-                QCursor(Qt.CursorShape.SizeAllCursor)
-            )
-
-        super().hoverMoveEvent(event)
-
-    def hoverLeaveEvent(
-        self,
-        event: QGraphicsSceneHoverEvent,
-    ) -> None:
-        """Restore the normal cursor when leaving the item."""
-        self.unsetCursor()
-        super().hoverLeaveEvent(event)
 
     def mousePressEvent(
         self,
         event: QGraphicsSceneMouseEvent,
     ) -> None:
-        """
-        Begin either a move or corner-resize operation.
-        """
-        if event.button() != Qt.MouseButton.LeftButton:
-            super().mousePressEvent(event)
-            return
-
-        self.setSelected(True)
-        self.setFocus()
-
-        self._geometry_before_interaction = (
-            self._current_scene_rectangle()
-        )
-
-        selected_handle = self._handle_at(event.pos())
-
-        if selected_handle is not None:
-            self._active_handle = selected_handle
-            self._interaction_start_rect = (
-                self._current_scene_rectangle()
+        """Begin moving the box when its main rectangle is dragged."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setSelected(True)
+            self.setFocus()
+            self._geometry_before_interaction = (
+                self._current_geometry()
             )
-
-            event.accept()
-            return
-
-        self._active_handle = None
-        self._interaction_start_rect = None
 
         super().mousePressEvent(event)
-
-    def mouseMoveEvent(
-        self,
-        event: QGraphicsSceneMouseEvent,
-    ) -> None:
-        """
-        Resize from the active corner or allow Qt to move the item.
-        """
-        if (
-            self._active_handle is not None
-            and self._interaction_start_rect is not None
-        ):
-            self._resize_from_scene_position(
-                event.scenePos()
-            )
-
-            event.accept()
-            return
-
-        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(
         self,
         event: QGraphicsSceneMouseEvent,
     ) -> None:
-        """
-        Finish the interaction and report changed geometry.
-        """
-        was_resizing = self._active_handle is not None
-
-        if not was_resizing:
-            super().mouseReleaseEvent(event)
-        else:
-            event.accept()
-
-        self._active_handle = None
-        self._interaction_start_rect = None
-
-        current_geometry = self._current_scene_rectangle()
-
-        if (
-            self._geometry_before_interaction is not None
-            and current_geometry
-            != self._geometry_before_interaction
-        ):
-            self._notify_geometry_changed()
-
-        self._geometry_before_interaction = None
+        """Finish a move operation and report changed geometry."""
+        super().mouseReleaseEvent(event)
+        self._finish_geometry_interaction()
 
     def itemChange(
         self,
         change: QGraphicsItem.GraphicsItemChange,
         value: object,
     ) -> object:
-        """
-        Restrict movement so the box remains inside the image.
-        """
+        """Clamp movement and show handles when the box is selected."""
         if (
             change
             == QGraphicsItem.GraphicsItemChange.ItemPositionChange
             and not self._applying_geometry
+            and isinstance(value, QPointF)
         ):
-            proposed_position = value
+            current_geometry = self._current_geometry()
+            moved_geometry = current_geometry.move_to_clamped(
+                x=value.x(),
+                y=value.y(),
+                bounds=self._image_bounds,
+            )
 
-            if isinstance(proposed_position, QPointF):
-                return self._clamp_item_position(
-                    proposed_position
-                )
+            return QPointF(
+                moved_geometry.left,
+                moved_geometry.top,
+            )
+
+        if (
+            change
+            == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged
+        ):
+            self._set_handles_visible(bool(value))
+            self.update()
 
         return super().itemChange(change, value)
 
-    def _handle_rectangles(
+    def begin_resize(
         self,
-    ) -> dict[ResizeHandle, QRectF]:
-        """
-        Return local rectangles for the four resize handles.
-        """
-        rectangle = self.rect()
-        handle_size = self.HANDLE_SIZE
-        half_handle = handle_size / 2.0
+        handle: ResizeHandle,
+    ) -> None:
+        """Begin resizing from one corner control."""
+        self.setSelected(True)
+        self.setFocus()
 
-        return {
-            ResizeHandle.TOP_LEFT: QRectF(
-                rectangle.left() - half_handle,
-                rectangle.top() - half_handle,
-                handle_size,
-                handle_size,
-            ),
-            ResizeHandle.TOP_RIGHT: QRectF(
-                rectangle.right() - half_handle,
-                rectangle.top() - half_handle,
-                handle_size,
-                handle_size,
-            ),
-            ResizeHandle.BOTTOM_LEFT: QRectF(
-                rectangle.left() - half_handle,
-                rectangle.bottom() - half_handle,
-                handle_size,
-                handle_size,
-            ),
-            ResizeHandle.BOTTOM_RIGHT: QRectF(
-                rectangle.right() - half_handle,
-                rectangle.bottom() - half_handle,
-                handle_size,
-                handle_size,
-            ),
-        }
+        current_geometry = self._current_geometry()
 
-    def _handle_at(
-        self,
-        local_position: QPointF,
-    ) -> ResizeHandle | None:
-        """
-        Return the resize handle under a local item position.
-        """
-        if not self.isSelected():
-            return None
+        self._geometry_before_interaction = current_geometry
+        self._resize_start_geometry = current_geometry
+        self._active_resize_handle = handle
 
-        for handle, rectangle in (
-            self._handle_rectangles().items()
-        ):
-            if rectangle.contains(local_position):
-                return handle
-
-        return None
-
-    def _resize_from_scene_position(
+    def continue_resize(
         self,
         scene_position: QPointF,
     ) -> None:
-        """
-        Resize the active corner toward a scene position.
-        """
+        """Resize the box toward a scene position."""
         if (
-            self._active_handle is None
-            or self._interaction_start_rect is None
+            self._resize_start_geometry is None
+            or self._active_resize_handle is None
         ):
             return
 
-        starting_rectangle = QRectF(
-            self._interaction_start_rect
+        resized_geometry = (
+            self._resize_start_geometry.resize_from_handle(
+                handle=self._active_resize_handle,
+                pointer_x=scene_position.x(),
+                pointer_y=scene_position.y(),
+                bounds=self._image_bounds,
+                minimum_size=self.MINIMUM_BOX_SIZE,
+            )
         )
 
-        left = starting_rectangle.left()
-        top = starting_rectangle.top()
-        right = starting_rectangle.right()
-        bottom = starting_rectangle.bottom()
+        self._apply_geometry(resized_geometry)
 
-        minimum_size = self.MINIMUM_BOX_SIZE
-        bounds = self._image_bounds
+    def finish_resize(self) -> None:
+        """Finish resizing and report changed geometry."""
+        self._resize_start_geometry = None
+        self._active_resize_handle = None
+        self._finish_geometry_interaction()
 
-        if self._active_handle == ResizeHandle.TOP_LEFT:
-            left = max(
-                bounds.left(),
-                min(
-                    scene_position.x(),
-                    right - minimum_size,
-                ),
-            )
-
-            top = max(
-                bounds.top(),
-                min(
-                    scene_position.y(),
-                    bottom - minimum_size,
-                ),
-            )
-
-        elif self._active_handle == ResizeHandle.TOP_RIGHT:
-            right = min(
-                bounds.right(),
-                max(
-                    scene_position.x(),
-                    left + minimum_size,
-                ),
-            )
-
-            top = max(
-                bounds.top(),
-                min(
-                    scene_position.y(),
-                    bottom - minimum_size,
-                ),
-            )
-
-        elif self._active_handle == ResizeHandle.BOTTOM_LEFT:
-            left = max(
-                bounds.left(),
-                min(
-                    scene_position.x(),
-                    right - minimum_size,
-                ),
-            )
-
-            bottom = min(
-                bounds.bottom(),
-                max(
-                    scene_position.y(),
-                    top + minimum_size,
-                ),
-            )
-
-        elif self._active_handle == ResizeHandle.BOTTOM_RIGHT:
-            right = min(
-                bounds.right(),
-                max(
-                    scene_position.x(),
-                    left + minimum_size,
-                ),
-            )
-
-            bottom = min(
-                bounds.bottom(),
-                max(
-                    scene_position.y(),
-                    top + minimum_size,
-                ),
-            )
-
-        resized_rectangle = QRectF(
-            QPointF(left, top),
-            QPointF(right, bottom),
-        )
-
-        self._apply_scene_rectangle(
-            resized_rectangle.normalized()
-        )
-
-    def _apply_scene_rectangle(
+    def _apply_geometry(
         self,
-        scene_rectangle: QRectF,
+        geometry: BoundingBoxGeometry,
     ) -> None:
-        """
-        Set the item's position and local rectangle from scene geometry.
-        """
-        clamped_rectangle = (
-            scene_rectangle.intersected(
-                self._image_bounds
-            )
+        """Apply image-coordinate geometry to the graphics item."""
+        geometry = geometry.clamp_to_bounds(
+            self._image_bounds
         )
 
-        if (
-            clamped_rectangle.width()
-            < self.MINIMUM_BOX_SIZE
-            or clamped_rectangle.height()
-            < self.MINIMUM_BOX_SIZE
-        ):
+        if not geometry.is_valid():
             raise ValueError(
-                "Bounding box is smaller than the minimum size."
+                "Bounding-box geometry must have positive dimensions."
             )
 
         self._applying_geometry = True
 
         try:
-            self.setPos(clamped_rectangle.topLeft())
-
+            self.setPos(geometry.left, geometry.top)
             self.setRect(
-                0.0,
-                0.0,
-                clamped_rectangle.width(),
-                clamped_rectangle.height(),
+                QRectF(
+                    0.0,
+                    0.0,
+                    geometry.width,
+                    geometry.height,
+                )
             )
 
         finally:
             self._applying_geometry = False
 
+        self._position_resize_handles()
         self.update()
 
-    def _current_scene_rectangle(self) -> QRectF:
-        """
-        Return annotation geometry in scene coordinates.
-        """
-        return QRectF(
-            self.pos().x(),
-            self.pos().y(),
-            self.rect().width(),
-            self.rect().height(),
+    def _current_geometry(self) -> BoundingBoxGeometry:
+        """Return the item's current rectangle in scene coordinates."""
+        return BoundingBoxGeometry.from_position_and_size(
+            x=self.pos().x(),
+            y=self.pos().y(),
+            width=self.rect().width(),
+            height=self.rect().height(),
         )
 
-    def _clamp_item_position(
+    def _position_resize_handles(self) -> None:
+        """Place each resize control at its matching local corner."""
+        rectangle = self.rect()
+
+        handle_positions = {
+            ResizeHandle.TOP_LEFT: rectangle.topLeft(),
+            ResizeHandle.TOP_RIGHT: rectangle.topRight(),
+            ResizeHandle.BOTTOM_LEFT: rectangle.bottomLeft(),
+            ResizeHandle.BOTTOM_RIGHT: rectangle.bottomRight(),
+        }
+
+        for handle, position in handle_positions.items():
+            self._resize_handles[handle].setPos(position)
+
+    def _set_handles_visible(
         self,
-        proposed_position: QPointF,
-    ) -> QPointF:
-        """
-        Keep a moved item completely inside the image.
-        """
-        maximum_x = (
-            self._image_bounds.right()
-            - self.rect().width()
-        )
+        visible: bool,
+    ) -> None:
+        """Show or hide all four corner controls."""
+        for handle_item in self._resize_handles.values():
+            handle_item.setVisible(visible)
 
-        maximum_y = (
-            self._image_bounds.bottom()
-            - self.rect().height()
-        )
+    def _finish_geometry_interaction(self) -> None:
+        """Notify the canvas when a move or resize changed the box."""
+        previous_geometry = self._geometry_before_interaction
+        self._geometry_before_interaction = None
 
-        clamped_x = min(
-            max(
-                proposed_position.x(),
-                self._image_bounds.left(),
-            ),
-            maximum_x,
-        )
+        if previous_geometry is None:
+            return
 
-        clamped_y = min(
-            max(
-                proposed_position.y(),
-                self._image_bounds.top(),
-            ),
-            maximum_y,
-        )
+        current_geometry = self._current_geometry()
 
-        return QPointF(clamped_x, clamped_y)
+        if current_geometry.is_close_to(previous_geometry):
+            return
 
-    def _notify_geometry_changed(self) -> None:
-        """
-        Send updated annotation geometry to the canvas/controller.
-        """
         if self._geometry_changed_callback is None:
             return
 
