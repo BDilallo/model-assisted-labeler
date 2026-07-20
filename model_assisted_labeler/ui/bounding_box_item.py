@@ -407,6 +407,23 @@ class BoundingBoxItem(QGraphicsRectItem):
         for handle_item in self._resize_handles.values():
             handle_item.setVisible(visible)
 
+    def prepare_for_removal(self) -> None:
+        """Detach callbacks and interaction state before scene removal.
+
+        QGraphicsScene can otherwise destroy the C++ item hierarchy while
+        Python callbacks still reference this box and its child handles.
+        Explicitly making the item inert is safer during image navigation,
+        particularly on Windows.
+        """
+        self._geometry_changed_callback = None
+        self._geometry_before_interaction = None
+        self._resize_start_geometry = None
+        self._active_resize_handle = None
+        self._set_handles_visible(False)
+        self.setSelected(False)
+        self.clearFocus()
+        self.setEnabled(False)
+
     def _finish_geometry_interaction(self) -> None:
         """Notify the canvas when a move or resize changed the box."""
         previous_geometry = self._geometry_before_interaction

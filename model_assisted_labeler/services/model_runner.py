@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Protocol
 
-from ultralytics import YOLO
 
 from model_assisted_labeler.models.bounding_box import BoundingBox
 
@@ -36,6 +35,10 @@ class DetectionModelRunner(Protocol):
         """Load a detection model from a local file."""
         ...
 
+    def unload_model(self) -> None:
+        """Unload the current model."""
+        ...
+
     def predict(
         self,
         image_path: Path,
@@ -68,7 +71,7 @@ class UltralyticsDetectionRunner:
                 Device passed to Ultralytics for inference. Examples
                 include "cpu", 0, or None for automatic selection.
         """
-        self._model: YOLO | None = None
+        self._model: object | None = None
         self._model_path: Path | None = None
         self._confidence_threshold = 0.25
         self._device = device
@@ -153,6 +156,14 @@ class UltralyticsDetectionRunner:
             )
 
         try:
+            from ultralytics import YOLO
+        except ImportError as error:
+            raise RuntimeError(
+                "Ultralytics is required to load a detection model. "
+                "Install it in the active virtual environment first."
+            ) from error
+
+        try:
             loaded_model = YOLO(
                 str(model_path),
                 task="detect",
@@ -165,6 +176,11 @@ class UltralyticsDetectionRunner:
 
         self._model = loaded_model
         self._model_path = model_path
+
+    def unload_model(self) -> None:
+        """Unload the currently active model."""
+        self._model = None
+        self._model_path = None
 
     def predict(
         self,

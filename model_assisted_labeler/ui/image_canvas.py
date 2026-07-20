@@ -1,4 +1,4 @@
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QKeyEvent,
@@ -176,21 +176,38 @@ class ImageCanvas(QGraphicsView):
             )
 
     def clear(self) -> None:
-        """Remove the displayed image and all canvas state."""
-        self._cancel_drawing()
+        """Remove the displayed image without using scene.clear().
 
+        BoundingBoxItem owns child resize-handle graphics items. Calling
+        QGraphicsScene.clear() destroys that complete C++ hierarchy in one
+        operation while Python dictionaries can still hold wrappers for the
+        deleted items. Removing each top-level item explicitly avoids that
+        ownership race during navigation.
+        """
+        self._cancel_drawing()
         self._suppress_selection_signals = True
+        signal_blocker = QSignalBlocker(self._graphics_scene)
 
         try:
-            self._graphics_scene.clear()
+            self._graphics_scene.clearSelection()
+            self._detach_annotation_items()
+
+            image_item = self._image_item
+            self._image_item = None
+
+            if (
+                image_item is not None
+                and image_item.scene() is self._graphics_scene
+            ):
+                self._graphics_scene.removeItem(image_item)
+
+            self._graphics_scene.setSceneRect(QRectF())
 
         finally:
+            del signal_blocker
             self._suppress_selection_signals = False
 
-        self._image_item = None
-        self._annotation_items.clear()
         self._selected_annotation_index = None
-
         self.resetTransform()
         self._fit_after_resize = False
         self.selection_cleared.emit()
@@ -646,17 +663,29 @@ class ImageCanvas(QGraphicsView):
     def _remove_annotation_items(self) -> None:
         """Remove all box items while keeping the image item."""
         self._suppress_selection_signals = True
+        signal_blocker = QSignalBlocker(self._graphics_scene)
 
         try:
-            for item in self._annotation_items.values():
-                self._graphics_scene.removeItem(item)
+            self._graphics_scene.clearSelection()
+            self._detach_annotation_items()
 
         finally:
+            del signal_blocker
             self._suppress_selection_signals = False
 
-        self._annotation_items.clear()
         self._selected_annotation_index = None
         self.selection_cleared.emit()
+
+    def _detach_annotation_items(self) -> None:
+        """Make box hierarchies inert and remove them one at a time."""
+        annotation_items = list(self._annotation_items.values())
+        self._annotation_items.clear()
+
+        for item in annotation_items:
+            item.prepare_for_removal()
+
+            if item.scene() is self._graphics_scene:
+                self._graphics_scene.removeItem(item)
 
     def _handle_scene_selection_changed(self) -> None:
         """Emit the annotation index selected in the scene."""

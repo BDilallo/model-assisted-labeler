@@ -27,7 +27,7 @@ class ResizeHandleItem(QGraphicsEllipseItem):
     same while the image is zoomed in, zoomed out, or fitted to the view.
     """
 
-    DIAMETER = 15.0
+    DIAMETER = 30.0
     BORDER_WIDTH = 4.0
 
     def __init__(
