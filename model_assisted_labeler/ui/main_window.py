@@ -2,11 +2,13 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -15,6 +17,9 @@ from PySide6.QtWidgets import (
 
 from model_assisted_labeler.controllers.annotation_controller import (
     AnnotationController,
+)
+from model_assisted_labeler.ui.batch_auto_annotation_dialog import (
+    BatchAutoAnnotationDialog,
 )
 from model_assisted_labeler.ui.class_panel import ClassPanel
 from model_assisted_labeler.ui.image_canvas import ImageCanvas
@@ -46,6 +51,9 @@ class MainWindow(QMainWindow):
         self._next_button = QPushButton("Next")
         self._predict_button = QPushButton("Predict / Refresh")
         self._auto_predict_button = QPushButton("Auto Predict: Off")
+        self._batch_auto_annotate_button = QPushButton(
+            "Batch Auto Annotate..."
+        )
         self._fit_button = QPushButton("Fit")
         self._save_button = QPushButton("Save")
         self._save_next_button = QPushButton("Save && Next")
@@ -61,6 +69,10 @@ class MainWindow(QMainWindow):
         self._predict_action = QAction("Predict / Refresh", self)
         self._replace_action = QAction(
             "Replace with Predictions",
+            self,
+        )
+        self._batch_auto_annotate_action = QAction(
+            "Batch Auto Annotate...",
             self,
         )
         self._clear_action = QAction("Clear Current Boxes", self)
@@ -123,6 +135,10 @@ class MainWindow(QMainWindow):
         self._predict_button.setToolTip(
             "Run or refresh prediction for the current image."
         )
+        self._batch_auto_annotate_button.setToolTip(
+            "Predict and save every clean image that is not already in "
+            "the annotation pool."
+        )
         self._remove_pool_button.setToolTip(
             "Delete only the session-owned image copy and annotation. "
             "The source image is never modified."
@@ -144,6 +160,7 @@ class MainWindow(QMainWindow):
         annotation_menu = self.menuBar().addMenu("Annotations")
         annotation_menu.addAction(self._predict_action)
         annotation_menu.addAction(self._replace_action)
+        annotation_menu.addAction(self._batch_auto_annotate_action)
         annotation_menu.addSeparator()
         annotation_menu.addAction(self._delete_box_action)
         annotation_menu.addAction(self._clear_action)
@@ -171,6 +188,9 @@ class MainWindow(QMainWindow):
         prediction_layout.setSpacing(4)
         prediction_layout.addWidget(self._predict_button)
         prediction_layout.addWidget(self._auto_predict_button)
+        prediction_layout.addWidget(
+            self._batch_auto_annotate_button
+        )
 
         save_layout = QVBoxLayout()
         save_layout.setSpacing(4)
@@ -213,6 +233,9 @@ class MainWindow(QMainWindow):
         self._replace_action.triggered.connect(
             self._replace_with_predictions
         )
+        self._batch_auto_annotate_action.triggered.connect(
+            self._batch_auto_annotate
+        )
         self._clear_action.triggered.connect(
             self._clear_current_annotations
         )
@@ -232,6 +255,9 @@ class MainWindow(QMainWindow):
         )
         self._auto_predict_button.toggled.connect(
             self._handle_auto_predict_toggled
+        )
+        self._batch_auto_annotate_button.clicked.connect(
+            self._batch_auto_annotate
         )
         self._fit_button.clicked.connect(self._canvas.fit_to_image)
         self._save_button.clicked.connect(self._save_current_image)
@@ -439,6 +465,101 @@ class MainWindow(QMainWindow):
         )
         self._refresh_interface()
 
+    def _batch_auto_annotate(self) -> None:
+        candidate_count = (
+            self._controller.batch_auto_annotation_candidate_count()
+        )
+
+        if candidate_count == 0:
+            QMessageBox.information(
+                self,
+                "Batch Auto Annotate",
+                (
+                    "No clean, unsaved images are available for batch "
+                    "annotation."
+                ),
+            )
+            return
+
+        dialog = BatchAutoAnnotationDialog(
+            image_count=candidate_count,
+            parent=self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        progress_dialog = QProgressDialog(
+            "Preparing batch annotation...",
+            "Cancel",
+            0,
+            candidate_count,
+            self,
+        )
+        progress_dialog.setWindowTitle("Batch Auto Annotate")
+        progress_dialog.setWindowModality(
+            Qt.WindowModality.WindowModal
+        )
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setValue(0)
+
+        self._prefetch_timer.stop()
+        QApplication.processEvents()
+
+        def update_progress(
+            completed: int,
+            total: int,
+            filename: str,
+        ) -> None:
+            progress_dialog.setMaximum(total)
+            progress_dialog.setLabelText(
+                f"Processed {completed} of {total}: {filename}"
+            )
+            progress_dialog.setValue(completed)
+            QApplication.processEvents()
+
+        try:
+            result = self._controller.batch_auto_annotate(
+                confidence_threshold=dialog.confidence_threshold,
+                progress_callback=update_progress,
+                cancellation_requested=(
+                    progress_dialog.wasCanceled
+                ),
+            )
+        except Exception as error:
+            progress_dialog.close()
+            self._canvas.refresh_annotations()
+            self._restart_prefetch_timer()
+            self._refresh_interface()
+            self._show_error(str(error))
+            return
+
+        progress_dialog.close()
+        self._canvas.refresh_annotations()
+        self._restart_prefetch_timer()
+        self._refresh_interface()
+
+        status = "cancelled" if result.cancelled else "complete"
+        summary = (
+            f"Batch auto annotation {status}.\n\n"
+            f"Processed: {result.processed_images} of "
+            f"{result.candidate_images}\n"
+            f"Saved: {result.saved_images}\n"
+            "Left unsaved because no qualifying boxes were found: "
+            f"{result.rejected_images}"
+        )
+        QMessageBox.information(
+            self,
+            "Batch Auto Annotate",
+            summary,
+        )
+        self.statusBar().showMessage(
+            f"Batch annotation saved {result.saved_images} image(s).",
+            6000,
+        )
+
     def _predict_current_image(self) -> None:
         try:
             predictions = self._run_prediction()
@@ -582,6 +703,9 @@ class MainWindow(QMainWindow):
             self._canvas.selected_annotation_index is not None
         )
         has_model = self._controller.model_is_loaded
+        batch_candidate_count = (
+            self._controller.batch_auto_annotation_candidate_count()
+        )
 
         if session is None or definition is None:
             self._session_label.setText("Session: None")
@@ -650,6 +774,11 @@ class MainWindow(QMainWindow):
         self._replace_action.setEnabled(
             interaction_enabled and has_model and has_image
         )
+        self._batch_auto_annotate_action.setEnabled(
+            interaction_enabled
+            and has_model
+            and batch_candidate_count > 0
+        )
         self._clear_action.setEnabled(interaction_enabled and has_boxes)
         self._delete_box_action.setEnabled(
             interaction_enabled and has_selection
@@ -664,6 +793,11 @@ class MainWindow(QMainWindow):
         )
         self._auto_predict_button.setEnabled(
             interaction_enabled and has_model and has_image
+        )
+        self._batch_auto_annotate_button.setEnabled(
+            interaction_enabled
+            and has_model
+            and batch_candidate_count > 0
         )
         self._fit_button.setEnabled(
             interaction_enabled and self._canvas.has_image

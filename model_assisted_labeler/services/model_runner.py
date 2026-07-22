@@ -42,6 +42,7 @@ class DetectionModelRunner(Protocol):
     def predict(
         self,
         image_path: Path,
+        confidence_threshold: float | None = None,
     ) -> list[BoundingBox]:
         """Run inference and return detected bounding boxes."""
         ...
@@ -185,6 +186,7 @@ class UltralyticsDetectionRunner:
     def predict(
         self,
         image_path: Path,
+        confidence_threshold: float | None = None,
     ) -> list[BoundingBox]:
         """
         Run object detection on one image.
@@ -210,10 +212,21 @@ class UltralyticsDetectionRunner:
                 f"Image path is not a file: {image_path}"
             )
 
+        if confidence_threshold is None:
+            effective_threshold = self._confidence_threshold
+        else:
+            if not 0.0 <= confidence_threshold < 1.0:
+                raise ValueError(
+                    "Confidence threshold must be at least 0 and "
+                    "less than 1."
+                )
+
+            effective_threshold = float(confidence_threshold)
+
         try:
             results = self._model.predict(
                 source=str(image_path),
-                conf=self._confidence_threshold,
+                conf=effective_threshold,
                 device=self._device,
                 verbose=False,
             )

@@ -334,6 +334,7 @@ class SessionRepository:
         self,
         definition: SessionDefinition,
         image_record: ImageRecord,
+        refresh_session_info: bool = True,
     ) -> None:
         if not image_record.annotations:
             raise ValueError(
@@ -378,10 +379,11 @@ class SessionRepository:
             if temporary_image.exists():
                 temporary_image.unlink()
 
-        definition.total_images_annotated = self._count_pooled_images(
-            definition.session_directory
-        )
-        self.save_session_info(definition)
+        if refresh_session_info:
+            definition.total_images_annotated = self._count_pooled_images(
+                definition.session_directory
+            )
+            self.save_session_info(definition)
 
     def remove_image_from_pool(
         self,

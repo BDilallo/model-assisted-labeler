@@ -1,4 +1,5 @@
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from model_assisted_labeler.models.annotation_session import (
@@ -20,6 +21,17 @@ from model_assisted_labeler.services.model_runner import (
 from model_assisted_labeler.services.session_repository import (
     SessionRepository,
 )
+
+
+@dataclass(frozen=True)
+class BatchAutoAnnotationResult:
+    """Summarize one batch auto-annotation operation."""
+
+    candidate_images: int
+    processed_images: int
+    saved_images: int
+    rejected_images: int
+    cancelled: bool
 
 
 class AnnotationController:
@@ -211,6 +223,122 @@ class AnnotationController:
             and not image_record.in_annotation_pool
             and not image_record.predictions_loaded
             and not image_record.is_dirty
+        )
+
+    def batch_auto_annotation_candidate_count(self) -> int:
+        """Return the number of clean, unsaved images eligible for batch."""
+        if self._session is None:
+            return 0
+
+        return len(self._batch_auto_annotation_candidates())
+
+    def batch_auto_annotate(
+        self,
+        confidence_threshold: float,
+        progress_callback: (
+            Callable[[int, int, str], None] | None
+        ) = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> BatchAutoAnnotationResult:
+        """Predict and save every eligible image above a confidence floor.
+
+        Images already in the annotation pool and images containing
+        unsaved work are never modified. An eligible image is saved only
+        when at least one supported model box meets the supplied minimum
+        confidence.
+        """
+        if not 0.0 <= confidence_threshold < 1.0:
+            raise ValueError(
+                "Confidence threshold must be at least 0 and less "
+                "than 1."
+            )
+
+        session = self._require_session()
+        definition = self._require_definition()
+
+        if not self._model_runner.is_loaded:
+            raise RuntimeError(
+                "A detection model must be loaded before batch "
+                "annotation."
+            )
+
+        self._validate_model_class_mapping(session)
+        candidates = self._batch_auto_annotation_candidates()
+        candidate_count = len(candidates)
+        processed_count = 0
+        saved_count = 0
+        rejected_count = 0
+        cancelled = False
+
+        try:
+            for image_record in candidates:
+                if (
+                    cancellation_requested is not None
+                    and cancellation_requested()
+                ):
+                    cancelled = True
+                    break
+
+                try:
+                    raw_predictions = self._model_runner.predict(
+                        image_record.image_path,
+                        confidence_threshold=confidence_threshold,
+                    )
+                except Exception as error:
+                    raise RuntimeError(
+                        "Batch auto annotation failed for "
+                        f"'{image_record.filename}': {error}"
+                    ) from error
+
+                predictions = [
+                    box
+                    for box in self._supported_predictions(
+                        session,
+                        raw_predictions,
+                    )
+                    if (
+                        box.confidence is not None
+                        and box.confidence >= confidence_threshold
+                    )
+                ]
+
+                if predictions:
+                    image_record.replace_annotations(predictions)
+                    self._session_repository.save_image_to_pool(
+                        definition,
+                        image_record,
+                        refresh_session_info=False,
+                    )
+                    image_record.mark_saved()
+                    saved_count += 1
+                else:
+                    image_record.annotations = []
+                    image_record.annotations_loaded = True
+                    image_record.is_dirty = False
+                    image_record.mark_predictions_loaded()
+                    rejected_count += 1
+
+                processed_count += 1
+
+                if progress_callback is not None:
+                    progress_callback(
+                        processed_count,
+                        candidate_count,
+                        image_record.filename,
+                    )
+
+                if image_record is not session.current_image:
+                    image_record.unload_annotations()
+
+        finally:
+            self._session_repository.save_session_info(definition)
+
+        return BatchAutoAnnotationResult(
+            candidate_images=candidate_count,
+            processed_images=processed_count,
+            saved_images=saved_count,
+            rejected_images=rejected_count,
+            cancelled=cancelled,
         )
 
     def predict_current_image(self) -> list[BoundingBox]:
@@ -595,6 +723,22 @@ class AnnotationController:
             self._session is not None
             and self._session.has_unsaved_changes()
         )
+
+    def _batch_auto_annotation_candidates(
+        self,
+    ) -> list[ImageRecord]:
+        """Return images safe for unattended prediction and saving."""
+        session = self._require_session()
+
+        return [
+            image_record
+            for image_record in session.images
+            if (
+                not image_record.in_annotation_pool
+                and not image_record.is_dirty
+                and not image_record.annotations
+            )
+        ]
 
     def _ensure_annotations_loaded(
         self,
