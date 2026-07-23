@@ -27,6 +27,7 @@ class SessionRepository:
     CLASSES_FILENAME = "Classes.txt"
     ANNOTATED_IMAGES_DIRECTORY = "Annotated Images"
     ANNOTATIONS_DIRECTORY = "Annotations"
+    ANNOTATION_METADATA_DIRECTORY = "Annotation Metadata"
 
     def __init__(
         self,
@@ -74,6 +75,7 @@ class SessionRepository:
             session_directory.mkdir(parents=False, exist_ok=False)
             self.annotated_images_directory(session_directory).mkdir()
             self.annotations_directory(session_directory).mkdir()
+            self.annotation_metadata_directory(session_directory).mkdir()
 
             next_class_id = (
                 max((item.class_id for item in classes), default=-1) + 1
@@ -298,6 +300,19 @@ class SessionRepository:
             / Path(image_path).name
         )
 
+    def annotation_metadata_path_for(
+        self,
+        definition: SessionDefinition,
+        image_path: Path,
+    ) -> Path:
+        self._validate_source_image_path(definition, image_path)
+        return (
+            self.annotation_metadata_directory(
+                definition.session_directory
+            )
+            / f"{Path(image_path).stem}.json"
+        )
+
     def load_annotations(
         self,
         definition: SessionDefinition,
@@ -307,12 +322,17 @@ class SessionRepository:
             definition,
             image_record.image_path,
         )
-
-        return self.annotation_store.load(
+        annotations = self.annotation_store.load(
             label_path=annotation_path,
             image_width=image_record.width,
             image_height=image_record.height,
         )
+        metadata_path = self.annotation_metadata_path_for(
+            definition,
+            image_record.image_path,
+        )
+        self._apply_annotation_metadata(metadata_path, annotations)
+        return annotations
 
     def image_is_in_pool(
         self,
@@ -367,6 +387,13 @@ class SessionRepository:
             image_width=image_record.width,
             image_height=image_record.height,
         )
+        self._save_annotation_metadata(
+            self.annotation_metadata_path_for(
+                definition,
+                image_record.image_path,
+            ),
+            image_record.annotations,
+        )
 
         temporary_image = copied_image_path.with_suffix(
             copied_image_path.suffix + ".tmp"
@@ -398,12 +425,19 @@ class SessionRepository:
             definition,
             image_path,
         )
+        metadata_path = self.annotation_metadata_path_for(
+            definition,
+            image_path,
+        )
 
         if annotation_path.exists():
             annotation_path.unlink()
 
         if copied_image_path.exists():
             copied_image_path.unlink()
+
+        if metadata_path.exists():
+            metadata_path.unlink()
 
         definition.total_images_annotated = self._count_pooled_images(
             definition.session_directory
@@ -450,19 +484,26 @@ class SessionRepository:
 
         for annotation_path in sorted(annotation_directory.glob("*.txt")):
             original_lines = self._read_annotation_lines(annotation_path)
-            matching_lines = [
-                line
-                for line in original_lines
-                if self._line_class_id(line) == class_id
+            retained_indexes = [
+                index
+                for index, line in enumerate(original_lines)
+                if self._line_class_id(line) != class_id
             ]
 
-            if not matching_lines:
+            if len(retained_indexes) == len(original_lines):
                 continue
 
             affected_stems.add(annotation_path.stem)
+            metadata_path = (
+                self.annotation_metadata_directory(
+                    definition.session_directory
+                )
+                / f"{annotation_path.stem}.json"
+            )
 
             if delete_referenced_images:
                 annotation_path.unlink(missing_ok=True)
+                metadata_path.unlink(missing_ok=True)
                 self._remove_copied_image_by_stem(
                     definition,
                     annotation_path.stem,
@@ -470,9 +511,7 @@ class SessionRepository:
                 continue
 
             remaining_lines = [
-                line
-                for line in original_lines
-                if self._line_class_id(line) != class_id
+                original_lines[index] for index in retained_indexes
             ]
 
             if remaining_lines:
@@ -480,8 +519,13 @@ class SessionRepository:
                     annotation_path,
                     "\n".join(remaining_lines) + "\n",
                 )
+                self._retain_annotation_metadata_rows(
+                    metadata_path,
+                    retained_indexes,
+                )
             else:
                 annotation_path.unlink(missing_ok=True)
+                metadata_path.unlink(missing_ok=True)
                 self._remove_copied_image_by_stem(
                     definition,
                     annotation_path.stem,
@@ -502,6 +546,15 @@ class SessionRepository:
     ) -> Path:
         return Path(session_directory) / self.ANNOTATED_IMAGES_DIRECTORY
 
+    def annotation_metadata_directory(
+        self,
+        session_directory: Path,
+    ) -> Path:
+        return (
+            Path(session_directory)
+            / self.ANNOTATION_METADATA_DIRECTORY
+        )
+
     def _ensure_session_structure(
         self,
         definition: SessionDefinition,
@@ -517,6 +570,9 @@ class SessionRepository:
             definition.session_directory
         ).mkdir(parents=True, exist_ok=True)
         self.annotations_directory(
+            definition.session_directory
+        ).mkdir(parents=True, exist_ok=True)
+        self.annotation_metadata_directory(
             definition.session_directory
         ).mkdir(parents=True, exist_ok=True)
 
@@ -802,6 +858,103 @@ class SessionRepository:
             return int(values[0])
         except ValueError:
             return None
+
+    def _save_annotation_metadata(
+        self,
+        metadata_path: Path,
+        annotations: list,
+    ) -> None:
+        payload = {
+            "version": 1,
+            "annotations": [
+                {
+                    "confidence": annotation.confidence,
+                    "source": annotation.source,
+                }
+                for annotation in annotations
+            ],
+        }
+        self._atomic_write_text(
+            metadata_path,
+            json.dumps(payload, indent=2) + "\n",
+        )
+
+    @staticmethod
+    def _apply_annotation_metadata(
+        metadata_path: Path,
+        annotations: list,
+    ) -> None:
+        if not metadata_path.is_file():
+            return
+
+        try:
+            payload = json.loads(
+                metadata_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return
+
+        rows = payload.get("annotations")
+
+        if not isinstance(rows, list) or len(rows) != len(annotations):
+            return
+
+        for annotation, row in zip(annotations, rows):
+            if not isinstance(row, dict):
+                continue
+
+            confidence = row.get("confidence")
+
+            if confidence is None:
+                annotation.confidence = None
+            elif isinstance(confidence, (int, float)):
+                normalized_confidence = float(confidence)
+
+                if 0.0 <= normalized_confidence <= 1.0:
+                    annotation.confidence = normalized_confidence
+
+            source = row.get("source")
+
+            if isinstance(source, str) and source.strip():
+                annotation.source = source.strip()
+
+    def _retain_annotation_metadata_rows(
+        self,
+        metadata_path: Path,
+        retained_indexes: list[int],
+    ) -> None:
+        if not metadata_path.is_file():
+            return
+
+        try:
+            payload = json.loads(
+                metadata_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            metadata_path.unlink(missing_ok=True)
+            return
+
+        rows = payload.get("annotations")
+
+        if not isinstance(rows, list):
+            metadata_path.unlink(missing_ok=True)
+            return
+
+        retained_rows = [
+            rows[index]
+            for index in retained_indexes
+            if 0 <= index < len(rows)
+        ]
+
+        if len(retained_rows) != len(retained_indexes):
+            metadata_path.unlink(missing_ok=True)
+            return
+
+        payload["annotations"] = retained_rows
+        self._atomic_write_text(
+            metadata_path,
+            json.dumps(payload, indent=2) + "\n",
+        )
 
     def _remove_copied_image_by_stem(
         self,

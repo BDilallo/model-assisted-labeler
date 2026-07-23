@@ -41,6 +41,36 @@ class AnnotationController:
     MODEL_EDITED_SOURCE = "model_edited"
     EDITED_SOURCE = "edited"
 
+    IMAGE_FILTER_KEYS = {
+        "all",
+        "unsaved",
+        "saved",
+        "no_boxes",
+        "unsaved_changes",
+        "confidence_below",
+        "confidence_above",
+        "manual",
+        "model_only",
+        "edited_model",
+        "multiple_boxes",
+        "single_box",
+        "contains_class",
+        "missing_class",
+    }
+
+    FILTERS_REQUIRING_ANNOTATIONS = {
+        "no_boxes",
+        "confidence_below",
+        "confidence_above",
+        "manual",
+        "model_only",
+        "edited_model",
+        "multiple_boxes",
+        "single_box",
+        "contains_class",
+        "missing_class",
+    }
+
     def __init__(
         self,
         session_builder: AnnotationSessionBuilder,
@@ -211,6 +241,190 @@ class AnnotationController:
         for index, image_record in enumerate(session.images):
             if index not in retained_indexes:
                 image_record.unload_annotations()
+
+    def image_indexes_matching(
+        self,
+        filter_key: str,
+        confidence_threshold: float = 0.8,
+        class_id: int | None = None,
+    ) -> list[int]:
+        """Return source-image indexes matching a temporary review filter."""
+        normalized_filter = filter_key.strip().casefold()
+
+        if normalized_filter not in self.IMAGE_FILTER_KEYS:
+            raise ValueError(f"Unknown image filter: {filter_key}")
+
+        if not 0.0 <= confidence_threshold < 1.0:
+            raise ValueError(
+                "Confidence threshold must be at least 0 and less "
+                "than 1."
+            )
+
+        session = self._require_session()
+
+        if normalized_filter in {"contains_class", "missing_class"}:
+            if class_id is None:
+                raise ValueError(
+                    "A class must be selected for this image filter."
+                )
+
+            self._validate_class_id(session, class_id)
+
+        matching_indexes: list[int] = []
+        needs_annotations = (
+            normalized_filter in self.FILTERS_REQUIRING_ANNOTATIONS
+        )
+
+        for index, image_record in enumerate(session.images):
+            loaded_for_filter = False
+
+            if needs_annotations and not image_record.annotations_loaded:
+                self._ensure_annotations_loaded(image_record)
+                loaded_for_filter = True
+
+            if self._image_matches_filter(
+                image_record=image_record,
+                filter_key=normalized_filter,
+                confidence_threshold=confidence_threshold,
+                class_id=class_id,
+            ):
+                matching_indexes.append(index)
+
+            if (
+                loaded_for_filter
+                and image_record is not session.current_image
+            ):
+                image_record.unload_annotations()
+
+        return matching_indexes
+
+    def image_index_matches_filter(
+        self,
+        image_index: int,
+        filter_key: str,
+        confidence_threshold: float = 0.8,
+        class_id: int | None = None,
+    ) -> bool:
+        """Return whether one source-image index matches a review filter."""
+        session = self._require_session()
+
+        if image_index < 0 or image_index >= len(session.images):
+            raise IndexError(f"Image index {image_index} is out of range.")
+
+        normalized_filter = filter_key.strip().casefold()
+
+        if normalized_filter not in self.IMAGE_FILTER_KEYS:
+            raise ValueError(f"Unknown image filter: {filter_key}")
+
+        if not 0.0 <= confidence_threshold < 1.0:
+            raise ValueError(
+                "Confidence threshold must be at least 0 and less "
+                "than 1."
+            )
+
+        if normalized_filter in {"contains_class", "missing_class"}:
+            if class_id is None:
+                raise ValueError(
+                    "A class must be selected for this image filter."
+                )
+
+            self._validate_class_id(session, class_id)
+
+        image_record = session.images[image_index]
+        loaded_for_filter = False
+
+        if (
+            normalized_filter in self.FILTERS_REQUIRING_ANNOTATIONS
+            and not image_record.annotations_loaded
+        ):
+            self._ensure_annotations_loaded(image_record)
+            loaded_for_filter = True
+
+        matches = self._image_matches_filter(
+            image_record=image_record,
+            filter_key=normalized_filter,
+            confidence_threshold=confidence_threshold,
+            class_id=class_id,
+        )
+
+        if loaded_for_filter and image_record is not session.current_image:
+            image_record.unload_annotations()
+
+        return matches
+
+    def _image_matches_filter(
+        self,
+        image_record: ImageRecord,
+        filter_key: str,
+        confidence_threshold: float,
+        class_id: int | None,
+    ) -> bool:
+        if filter_key == "all":
+            return True
+
+        if filter_key == "unsaved":
+            return not image_record.in_annotation_pool
+
+        if filter_key == "saved":
+            return image_record.in_annotation_pool
+
+        if filter_key == "unsaved_changes":
+            return image_record.is_dirty
+
+        annotations = image_record.annotations
+
+        if filter_key == "no_boxes":
+            return not annotations
+
+        if filter_key == "multiple_boxes":
+            return len(annotations) > 1
+
+        if filter_key == "single_box":
+            return len(annotations) == 1
+
+        if filter_key == "manual":
+            return any(
+                box.source
+                not in {self.MODEL_SOURCE, self.MODEL_EDITED_SOURCE}
+                for box in annotations
+            )
+
+        if filter_key == "model_only":
+            return bool(annotations) and all(
+                box.source == self.MODEL_SOURCE
+                for box in annotations
+            )
+
+        if filter_key == "edited_model":
+            return any(
+                box.source == self.MODEL_EDITED_SOURCE
+                for box in annotations
+            )
+
+        if filter_key == "contains_class":
+            return any(box.class_id == class_id for box in annotations)
+
+        if filter_key == "missing_class":
+            return all(box.class_id != class_id for box in annotations)
+
+        confidence_values = [
+            box.confidence
+            for box in annotations
+            if box.confidence is not None
+        ]
+
+        if not confidence_values:
+            return False
+
+        image_confidence = min(confidence_values)
+
+        if filter_key == "confidence_below":
+            return image_confidence < confidence_threshold
+
+        if filter_key == "confidence_above":
+            return image_confidence >= confidence_threshold
+
+        return False
 
     def should_auto_predict_current_image(self) -> bool:
         image_record = self.current_image
