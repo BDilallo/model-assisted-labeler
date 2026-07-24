@@ -1,5 +1,4 @@
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from model_assisted_labeler.models.annotation_session import (
@@ -15,6 +14,13 @@ from model_assisted_labeler.services.annotation_session_builder import (
 from model_assisted_labeler.services.annotation_store import (
     YoloAnnotationStore,
 )
+from model_assisted_labeler.services.dataset_exporter import (
+    CancellationCheck,
+    DatasetExportRequest,
+    DatasetExportResult,
+    DatasetExporter,
+    ProgressCallback,
+)
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
 )
@@ -23,51 +29,12 @@ from model_assisted_labeler.services.session_repository import (
 )
 
 
-@dataclass(frozen=True)
-class BatchAutoAnnotationResult:
-    """Summarize one batch auto-annotation operation."""
-
-    candidate_images: int
-    processed_images: int
-    saved_images: int
-    rejected_images: int
-    cancelled: bool
-
-
 class AnnotationController:
     """Coordinate session state, persistence, and model prediction."""
 
     MODEL_SOURCE = "model"
     MODEL_EDITED_SOURCE = "model_edited"
     EDITED_SOURCE = "edited"
-
-    IMAGE_FILTER_KEYS = {
-        "all",
-        "unsaved",
-        "saved",
-        "no_boxes",
-        "unsaved_changes",
-        "confidence_below",
-        "confidence_at_or_above",
-        "manual",
-        "model_only",
-        "edited_model",
-        "single_box",
-        "multiple_boxes",
-        "missing_class",
-    }
-
-    FILTERS_REQUIRING_ANNOTATIONS = {
-        "no_boxes",
-        "confidence_below",
-        "confidence_at_or_above",
-        "manual",
-        "model_only",
-        "edited_model",
-        "single_box",
-        "multiple_boxes",
-        "missing_class",
-    }
 
     def __init__(
         self,
@@ -80,6 +47,10 @@ class AnnotationController:
         self._annotation_store = annotation_store
         self._model_runner = model_runner
         self._session_repository = session_repository
+        self._dataset_exporter = DatasetExporter(
+            session_repository=session_repository,
+            annotation_store=annotation_store,
+        )
 
         self._session: AnnotationSession | None = None
         self._session_definition: SessionDefinition | None = None
@@ -117,6 +88,11 @@ class AnnotationController:
             return 0
 
         return self._session_definition.total_images_annotated
+
+    @property
+    def default_dataset_export_directory(self) -> Path:
+        """Return the default parent folder used by the export dialog."""
+        return self._session_repository.workspace_root / "Exported Datasets"
 
     def load_model(self, model_path: Path) -> None:
         self._model_runner.load_model(model_path)
@@ -240,227 +216,6 @@ class AnnotationController:
             if index not in retained_indexes:
                 image_record.unload_annotations()
 
-    def prefetch_annotation_indexes(
-        self,
-        image_indexes: list[int],
-    ) -> None:
-        """Cache annotations for selected source indexes only.
-
-        Dirty records are still protected by ``ImageRecord`` and are not
-        discarded when they fall outside the requested review window.
-        """
-        session = self._require_session()
-        retained_indexes = set(image_indexes)
-
-        if session.images:
-            retained_indexes.add(session.current_index)
-
-        for index in retained_indexes:
-            if index < 0 or index >= len(session.images):
-                raise IndexError(f"Image index {index} is out of range.")
-
-            self._ensure_annotations_loaded(session.images[index])
-
-        for index, image_record in enumerate(session.images):
-            if index not in retained_indexes:
-                image_record.unload_annotations()
-
-    def image_indexes_matching(
-        self,
-        filter_key: str,
-        confidence_threshold: float = 0.8,
-        class_id: int | None = None,
-    ) -> list[int]:
-        """Return source-image indexes matching the review controls.
-
-        ``filter_key`` selects the primary filter. A selected ``class_id``
-        additionally narrows most filters to images containing that class.
-        Confidence filters use the lowest stored model confidence, limited
-        to the selected class when one is supplied.
-        """
-        normalized_filter = self._validate_image_filter_arguments(
-            filter_key=filter_key,
-            confidence_threshold=confidence_threshold,
-            class_id=class_id,
-        )
-        session = self._require_session()
-        matching_indexes: list[int] = []
-        needs_annotations = (
-            normalized_filter in self.FILTERS_REQUIRING_ANNOTATIONS
-            or class_id is not None
-        )
-
-        for index, image_record in enumerate(session.images):
-            loaded_for_filter = False
-
-            if needs_annotations and not image_record.annotations_loaded:
-                self._ensure_annotations_loaded(image_record)
-                loaded_for_filter = True
-
-            if self._image_matches_filter(
-                image_record=image_record,
-                filter_key=normalized_filter,
-                confidence_threshold=confidence_threshold,
-                class_id=class_id,
-            ):
-                matching_indexes.append(index)
-
-            if (
-                loaded_for_filter
-                and image_record is not session.current_image
-            ):
-                image_record.unload_annotations()
-
-        return matching_indexes
-
-    def image_index_matches_filter(
-        self,
-        image_index: int,
-        filter_key: str,
-        confidence_threshold: float = 0.8,
-        class_id: int | None = None,
-    ) -> bool:
-        """Return whether one source-image index matches the controls."""
-        session = self._require_session()
-
-        if image_index < 0 or image_index >= len(session.images):
-            raise IndexError(f"Image index {image_index} is out of range.")
-
-        normalized_filter = self._validate_image_filter_arguments(
-            filter_key=filter_key,
-            confidence_threshold=confidence_threshold,
-            class_id=class_id,
-        )
-        image_record = session.images[image_index]
-        needs_annotations = (
-            normalized_filter in self.FILTERS_REQUIRING_ANNOTATIONS
-            or class_id is not None
-        )
-        loaded_for_filter = False
-
-        if needs_annotations and not image_record.annotations_loaded:
-            self._ensure_annotations_loaded(image_record)
-            loaded_for_filter = True
-
-        matches = self._image_matches_filter(
-            image_record=image_record,
-            filter_key=normalized_filter,
-            confidence_threshold=confidence_threshold,
-            class_id=class_id,
-        )
-
-        if loaded_for_filter and image_record is not session.current_image:
-            image_record.unload_annotations()
-
-        return matches
-
-    def _validate_image_filter_arguments(
-        self,
-        filter_key: str,
-        confidence_threshold: float,
-        class_id: int | None,
-    ) -> str:
-        normalized_filter = filter_key.strip().casefold()
-
-        if normalized_filter not in self.IMAGE_FILTER_KEYS:
-            raise ValueError(f"Unknown image filter: {filter_key}")
-
-        if not 0.0 <= confidence_threshold < 1.0:
-            raise ValueError(
-                "Confidence threshold must be at least 0 and less "
-                "than 1."
-            )
-
-        session = self._require_session()
-
-        if class_id is not None:
-            self._validate_class_id(session, class_id)
-
-        if normalized_filter == "missing_class" and class_id is None:
-            raise ValueError(
-                "Select a class before using Missing Selected Class."
-            )
-
-        return normalized_filter
-
-    def _image_matches_filter(
-        self,
-        image_record: ImageRecord,
-        filter_key: str,
-        confidence_threshold: float,
-        class_id: int | None,
-    ) -> bool:
-        annotations = image_record.annotations
-
-        if filter_key == "missing_class":
-            return not any(
-                box.class_id == class_id for box in annotations
-            )
-
-        if filter_key == "all":
-            primary_match = True
-        elif filter_key == "unsaved":
-            primary_match = not image_record.in_annotation_pool
-        elif filter_key == "saved":
-            primary_match = image_record.in_annotation_pool
-        elif filter_key == "unsaved_changes":
-            primary_match = image_record.is_dirty
-        elif filter_key == "no_boxes":
-            primary_match = not annotations
-        elif filter_key == "single_box":
-            primary_match = len(annotations) == 1
-        elif filter_key == "multiple_boxes":
-            primary_match = len(annotations) > 1
-        elif filter_key == "manual":
-            primary_match = any(
-                box.source in {"manual", self.EDITED_SOURCE}
-                for box in annotations
-            )
-        elif filter_key == "model_only":
-            primary_match = bool(annotations) and all(
-                box.source == self.MODEL_SOURCE
-                for box in annotations
-            )
-        elif filter_key == "edited_model":
-            primary_match = any(
-                box.source == self.MODEL_EDITED_SOURCE
-                for box in annotations
-            )
-        elif filter_key in {
-            "confidence_below",
-            "confidence_at_or_above",
-        }:
-            confidence_values = [
-                box.confidence
-                for box in annotations
-                if (
-                    box.confidence is not None
-                    and box.source
-                    in {self.MODEL_SOURCE, self.MODEL_EDITED_SOURCE}
-                    and (class_id is None or box.class_id == class_id)
-                )
-            ]
-
-            if not confidence_values:
-                return False
-
-            image_confidence = min(confidence_values)
-
-            if filter_key == "confidence_below":
-                primary_match = image_confidence < confidence_threshold
-            else:
-                primary_match = image_confidence >= confidence_threshold
-        else:
-            return False
-
-        if not primary_match:
-            return False
-
-        if class_id is None or filter_key == "no_boxes":
-            return True
-
-        return any(box.class_id == class_id for box in annotations)
-
     def should_auto_predict_current_image(self) -> bool:
         image_record = self.current_image
 
@@ -472,122 +227,6 @@ class AnnotationController:
             and not image_record.in_annotation_pool
             and not image_record.predictions_loaded
             and not image_record.is_dirty
-        )
-
-    def batch_auto_annotation_candidate_count(self) -> int:
-        """Return the number of clean, unsaved images eligible for batch."""
-        if self._session is None:
-            return 0
-
-        return len(self._batch_auto_annotation_candidates())
-
-    def batch_auto_annotate(
-        self,
-        confidence_threshold: float,
-        progress_callback: (
-            Callable[[int, int, str], None] | None
-        ) = None,
-        cancellation_requested: Callable[[], bool] | None = None,
-    ) -> BatchAutoAnnotationResult:
-        """Predict and save every eligible image above a confidence floor.
-
-        Images already in the annotation pool and images containing
-        unsaved work are never modified. An eligible image is saved only
-        when at least one supported model box meets the supplied minimum
-        confidence.
-        """
-        if not 0.0 <= confidence_threshold < 1.0:
-            raise ValueError(
-                "Confidence threshold must be at least 0 and less "
-                "than 1."
-            )
-
-        session = self._require_session()
-        definition = self._require_definition()
-
-        if not self._model_runner.is_loaded:
-            raise RuntimeError(
-                "A detection model must be loaded before batch "
-                "annotation."
-            )
-
-        self._validate_model_class_mapping(session)
-        candidates = self._batch_auto_annotation_candidates()
-        candidate_count = len(candidates)
-        processed_count = 0
-        saved_count = 0
-        rejected_count = 0
-        cancelled = False
-
-        try:
-            for image_record in candidates:
-                if (
-                    cancellation_requested is not None
-                    and cancellation_requested()
-                ):
-                    cancelled = True
-                    break
-
-                try:
-                    raw_predictions = self._model_runner.predict(
-                        image_record.image_path,
-                        confidence_threshold=confidence_threshold,
-                    )
-                except Exception as error:
-                    raise RuntimeError(
-                        "Batch auto annotation failed for "
-                        f"'{image_record.filename}': {error}"
-                    ) from error
-
-                predictions = [
-                    box
-                    for box in self._supported_predictions(
-                        session,
-                        raw_predictions,
-                    )
-                    if (
-                        box.confidence is not None
-                        and box.confidence >= confidence_threshold
-                    )
-                ]
-
-                if predictions:
-                    image_record.replace_annotations(predictions)
-                    self._session_repository.save_image_to_pool(
-                        definition,
-                        image_record,
-                        refresh_session_info=False,
-                    )
-                    image_record.mark_saved()
-                    saved_count += 1
-                else:
-                    image_record.annotations = []
-                    image_record.annotations_loaded = True
-                    image_record.is_dirty = False
-                    image_record.mark_predictions_loaded()
-                    rejected_count += 1
-
-                processed_count += 1
-
-                if progress_callback is not None:
-                    progress_callback(
-                        processed_count,
-                        candidate_count,
-                        image_record.filename,
-                    )
-
-                if image_record is not session.current_image:
-                    image_record.unload_annotations()
-
-        finally:
-            self._session_repository.save_session_info(definition)
-
-        return BatchAutoAnnotationResult(
-            candidate_images=candidate_count,
-            processed_images=processed_count,
-            saved_images=saved_count,
-            rejected_images=rejected_count,
-            cancelled=cancelled,
         )
 
     def predict_current_image(self) -> list[BoundingBox]:
@@ -755,6 +394,22 @@ class AnnotationController:
             saved_count += 1
 
         return saved_count
+
+    def export_dataset(
+        self,
+        request: DatasetExportRequest,
+        progress_callback: ProgressCallback | None = None,
+        cancellation_check: CancellationCheck | None = None,
+    ) -> DatasetExportResult:
+        """Export the saved annotation pool as a YOLO dataset."""
+        definition = self._require_definition()
+
+        return self._dataset_exporter.export(
+            definition=definition,
+            request=request,
+            progress_callback=progress_callback,
+            cancellation_check=cancellation_check,
+        )
 
     def remove_current_from_annotation_pool(self) -> None:
         image_record = self._require_current_image()
@@ -972,22 +627,6 @@ class AnnotationController:
             self._session is not None
             and self._session.has_unsaved_changes()
         )
-
-    def _batch_auto_annotation_candidates(
-        self,
-    ) -> list[ImageRecord]:
-        """Return images safe for unattended prediction and saving."""
-        session = self._require_session()
-
-        return [
-            image_record
-            for image_record in session.images
-            if (
-                not image_record.in_annotation_pool
-                and not image_record.is_dirty
-                and not image_record.annotations
-            )
-        ]
 
     def _ensure_annotations_loaded(
         self,
