@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from model_assisted_labeler.controllers.annotation_controller import (
+from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
 from model_assisted_labeler.models.bounding_box import BoundingBox
