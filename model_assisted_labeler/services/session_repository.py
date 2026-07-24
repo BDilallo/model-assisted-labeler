@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 from model_assisted_labeler.models.annotation_session import ClassDefinition
+from model_assisted_labeler.models.bounding_box import BoundingBox
 from model_assisted_labeler.models.image_record import ImageRecord
 from model_assisted_labeler.models.session_definition import SessionDefinition
 from model_assisted_labeler.services.annotation_store import YoloAnnotationStore
@@ -317,7 +318,7 @@ class SessionRepository:
         self,
         definition: SessionDefinition,
         image_record: ImageRecord,
-    ) -> list:
+    ) -> list[BoundingBox]:
         annotation_path = self.annotation_path_for(
             definition,
             image_record.image_path,
@@ -862,7 +863,7 @@ class SessionRepository:
     def _save_annotation_metadata(
         self,
         metadata_path: Path,
-        annotations: list,
+        annotations: list[BoundingBox],
     ) -> None:
         payload = {
             "version": 1,
@@ -882,7 +883,7 @@ class SessionRepository:
     @staticmethod
     def _apply_annotation_metadata(
         metadata_path: Path,
-        annotations: list,
+        annotations: list[BoundingBox],
     ) -> None:
         if not metadata_path.is_file():
             return

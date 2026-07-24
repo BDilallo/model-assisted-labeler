@@ -875,9 +875,32 @@ class MainWindow(QMainWindow):
         self._prefetch_timer.start()
 
     def _prefetch_nearby_annotations(self) -> None:
+        session = self._controller.session
+
+        if session is None or not session.images:
+            return
+
         try:
-            self._controller.prefetch_nearby_annotations(
-                self.PREFETCH_RADIUS
+            if session.current_index in self._filtered_image_indexes:
+                filtered_position = self._filtered_image_indexes.index(
+                    session.current_index
+                )
+                start_position = max(
+                    0,
+                    filtered_position - self.PREFETCH_RADIUS,
+                )
+                end_position = min(
+                    len(self._filtered_image_indexes),
+                    filtered_position + self.PREFETCH_RADIUS + 1,
+                )
+                retained_indexes = self._filtered_image_indexes[
+                    start_position:end_position
+                ]
+            else:
+                retained_indexes = [session.current_index]
+
+            self._controller.prefetch_annotation_indexes(
+                retained_indexes
             )
         except Exception as error:
             self.statusBar().showMessage(str(error), 5000)
