@@ -12,6 +12,9 @@ from model_assisted_labeler.controllers.annotation_sources import (
 from model_assisted_labeler.controllers.class_controller import (
     ClassController,
 )
+from model_assisted_labeler.controllers.dataset_export_controller import (
+    DatasetExportController,
+)
 from model_assisted_labeler.controllers.image_filter_controller import (
     ImageFilterController,
 )
@@ -38,6 +41,13 @@ from model_assisted_labeler.repositories.session_repository import (
 )
 from model_assisted_labeler.services.annotation_session_builder import (
     AnnotationSessionBuilder,
+)
+from model_assisted_labeler.services.dataset_export_service import (
+    CancellationCallback,
+    DatasetExportResult,
+    DatasetExportService,
+    DatasetExportSettings,
+    ProgressCallback,
 )
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
@@ -90,6 +100,10 @@ class AnnotationController:
             session_repository=session_repository,
         )
         self._filter_controller = ImageFilterController(context=context)
+        self._export_controller = DatasetExportController(
+            context=context,
+            export_service=DatasetExportService(),
+        )
 
     # -- session state --------------------------------------------------
 
@@ -286,4 +300,28 @@ class AnnotationController:
             filter_key,
             confidence_threshold=confidence_threshold,
             class_id=class_id,
+        )
+
+    # -- dataset export ------------------------------------------------------
+
+    @property
+    def pooled_image_count(self) -> int:
+        return self._export_controller.pooled_image_count
+
+    def compute_export_split(
+        self,
+        settings: DatasetExportSettings,
+    ) -> tuple[int, int]:
+        return self._export_controller.compute_export_split(settings)
+
+    def export_dataset(
+        self,
+        settings: DatasetExportSettings,
+        progress_callback: ProgressCallback | None = None,
+        cancellation_requested: CancellationCallback | None = None,
+    ) -> DatasetExportResult:
+        return self._export_controller.export_dataset(
+            settings,
+            progress_callback=progress_callback,
+            cancellation_requested=cancellation_requested,
         )

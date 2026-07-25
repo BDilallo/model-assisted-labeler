@@ -21,8 +21,14 @@ from model_assisted_labeler.controllers.application_controller import (
 )
 from model_assisted_labeler.ui.canvas.image_canvas import ImageCanvas
 from model_assisted_labeler.ui.class_panel import ClassPanel
+from model_assisted_labeler.services.dataset_export_service import (
+    DatasetExportCancelled,
+)
 from model_assisted_labeler.ui.dialogs.batch_auto_annotation_dialog import (
     BatchAutoAnnotationDialog,
+)
+from model_assisted_labeler.ui.dialogs.dataset_export_dialog import (
+    DatasetExportDialog,
 )
 from model_assisted_labeler.ui.filtered_image_navigator import (
     FilteredImageNavigator,
@@ -71,6 +77,7 @@ class MainWindow(QMainWindow):
             "Remove from Annotation Pool"
         )
 
+        self._export_dataset_action = QAction("Export Dataset...", self)
         self._save_action = QAction("Save Current", self)
         self._save_all_action = QAction("Save All Changes", self)
         self._save_next_action = QAction("Save and Next", self)
@@ -162,6 +169,8 @@ class MainWindow(QMainWindow):
 
     def _build_menu_bar(self) -> None:
         file_menu = self.menuBar().addMenu("File")
+        file_menu.addAction(self._export_dataset_action)
+        file_menu.addSeparator()
         file_menu.addAction(self._save_action)
         file_menu.addAction(self._save_all_action)
         file_menu.addAction(self._save_next_action)
@@ -241,6 +250,9 @@ class MainWindow(QMainWindow):
         )
 
     def _connect_signals(self) -> None:
+        self._export_dataset_action.triggered.connect(
+            self._export_dataset
+        )
         self._save_action.triggered.connect(self._save_current_image)
         self._save_all_action.triggered.connect(self._save_all_changes)
         self._save_next_action.triggered.connect(self._save_and_next)
@@ -446,6 +458,110 @@ class MainWindow(QMainWindow):
         finally:
             self._navigation_in_progress = False
             self._refresh_interface()
+
+    def _export_dataset(self) -> None:
+        if not self._controller.has_session:
+            return
+
+        pooled_count = self._controller.pooled_image_count
+
+        if pooled_count == 0:
+            QMessageBox.information(
+                self,
+                "Export Dataset",
+                "There are no saved images to export yet.",
+            )
+            return
+
+        session = self._controller.session
+        default_name = (
+            f"{session.name}_dataset" if session is not None else "dataset"
+        )
+
+        dialog = DatasetExportDialog(
+            default_dataset_name=default_name,
+            pooled_image_count=pooled_count,
+            has_unsaved_changes=self._controller.has_unsaved_changes(),
+            parent=self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        settings = dialog.result_data
+
+        if settings is None:
+            return
+
+        progress_dialog = QProgressDialog(
+            "Preparing dataset export...",
+            "Cancel",
+            0,
+            pooled_count,
+            self,
+        )
+        progress_dialog.setWindowTitle("Export Dataset")
+        progress_dialog.setWindowModality(
+            Qt.WindowModality.WindowModal
+        )
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setValue(0)
+
+        self._prefetch_timer.stop()
+        QApplication.processEvents()
+
+        def update_progress(
+            completed: int,
+            total: int,
+            filename: str,
+        ) -> None:
+            progress_dialog.setMaximum(total)
+            progress_dialog.setLabelText(
+                f"Exporting {completed} of {total}: {filename}"
+            )
+            progress_dialog.setValue(completed)
+            QApplication.processEvents()
+
+        try:
+            result = self._controller.export_dataset(
+                settings,
+                progress_callback=update_progress,
+                cancellation_requested=progress_dialog.wasCanceled,
+            )
+        except DatasetExportCancelled:
+            progress_dialog.close()
+            self._restart_prefetch_timer()
+            self.statusBar().showMessage(
+                "Dataset export cancelled.",
+                4000,
+            )
+            return
+        except Exception as error:
+            progress_dialog.close()
+            self._restart_prefetch_timer()
+            self._show_error(str(error))
+            return
+
+        progress_dialog.close()
+        self._restart_prefetch_timer()
+
+        QMessageBox.information(
+            self,
+            "Export Dataset",
+            (
+                f"Dataset exported to:\n{result.output_path}\n\n"
+                f"Train: {result.train_count} image(s)\n"
+                f"Validation: {result.val_count} image(s)\n"
+                f"Classes: {result.class_count}"
+            ),
+        )
+        self.statusBar().showMessage(
+            "Dataset exported: "
+            f"{result.train_count} train / {result.val_count} val.",
+            6000,
+        )
 
     def _remove_from_annotation_pool(self) -> None:
         image_record = self._controller.current_image
@@ -964,6 +1080,9 @@ class MainWindow(QMainWindow):
             and image_record.in_annotation_pool
         )
 
+        self._export_dataset_action.setEnabled(
+            interaction_enabled and self._controller.pooled_image_count > 0
+        )
         self._save_action.setEnabled(can_save)
         self._save_all_action.setEnabled(
             self._controller.has_unsaved_changes()
