@@ -7,35 +7,37 @@ from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
 from model_assisted_labeler.models.session_definition import SessionDefinition
-from model_assisted_labeler.services.annotation_session_builder import (
-    AnnotationSessionBuilder,
-)
-from model_assisted_labeler.services.annotation_store import (
+from model_assisted_labeler.repositories.annotation_store import (
     YoloAnnotationStore,
 )
-from model_assisted_labeler.services.application_settings import (
+from model_assisted_labeler.repositories.application_settings import (
     ApplicationSettingsRepository,
+)
+from model_assisted_labeler.repositories.session_repository import (
+    SessionAlreadyExistsError,
+    SessionRepository,
+)
+from model_assisted_labeler.services.annotation_session_builder import (
+    AnnotationSessionBuilder,
 )
 from model_assisted_labeler.services.image_service import ImageService
 from model_assisted_labeler.services.model_runner import (
     UltralyticsDetectionRunner,
 )
-from model_assisted_labeler.services.session_repository import (
-    SessionAlreadyExistsError,
-    SessionRepository,
-)
-from model_assisted_labeler.ui.main_window import MainWindow
-from model_assisted_labeler.ui.session_creation_dialog import (
+from model_assisted_labeler.ui.dialogs.session_creation_dialog import (
     SessionCreationDialog,
 )
-from model_assisted_labeler.ui.session_load_dialog import SessionLoadDialog
-from model_assisted_labeler.ui.session_review_dialog import (
+from model_assisted_labeler.ui.dialogs.session_load_dialog import (
+    SessionLoadDialog,
+)
+from model_assisted_labeler.ui.dialogs.session_review_dialog import (
     SessionReviewDialog,
 )
-from model_assisted_labeler.ui.startup_dialog import (
+from model_assisted_labeler.ui.dialogs.startup_dialog import (
     SaveLocationDialog,
     StartupDialog,
 )
+from model_assisted_labeler.ui.main_window import MainWindow
 
 
 def _resolve_workspace_root(
@@ -157,6 +159,11 @@ def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Model-Assisted Labeler")
     application.setOrganizationName("Model-Assisted Labeler")
+    # The native "windows11" style (Qt's default on Windows 11) renders
+    # combo box popups with DWM shadow/acrylic compositing that briefly
+    # shows ghosted content from behind the popup. Fusion draws its own
+    # popups and avoids that glitch.
+    application.setStyle("Fusion")
 
     settings_repository = ApplicationSettingsRepository()
     workspace_root = _resolve_workspace_root(settings_repository)

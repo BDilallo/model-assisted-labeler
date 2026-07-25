@@ -1,8 +1,10 @@
 from model_assisted_labeler.models.annotation_session import AnnotationSession
 from model_assisted_labeler.models.image_record import ImageRecord
 from model_assisted_labeler.models.session_definition import SessionDefinition
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 from model_assisted_labeler.services.image_service import ImageService
-from model_assisted_labeler.services.session_repository import SessionRepository
 
 
 class AnnotationSessionBuilder:

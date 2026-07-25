@@ -25,24 +25,22 @@ from model_assisted_labeler.controllers.session_context import (
 from model_assisted_labeler.controllers.session_controller import (
     SessionController,
 )
-from model_assisted_labeler.models.annotation_session import (
-    AnnotationSession,
-    ClassDefinition,
-)
+from model_assisted_labeler.models.annotation_session import AnnotationSession
 from model_assisted_labeler.models.bounding_box import BoundingBox
+from model_assisted_labeler.models.class_definition import ClassDefinition
 from model_assisted_labeler.models.image_record import ImageRecord
 from model_assisted_labeler.models.session_definition import SessionDefinition
+from model_assisted_labeler.repositories.annotation_store import (
+    YoloAnnotationStore,
+)
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 from model_assisted_labeler.services.annotation_session_builder import (
     AnnotationSessionBuilder,
 )
-from model_assisted_labeler.services.annotation_store import (
-    YoloAnnotationStore,
-)
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
-)
-from model_assisted_labeler.services.session_repository import (
-    SessionRepository,
 )
 
 __all__ = ["AnnotationController", "BatchAutoAnnotationResult"]
@@ -243,6 +241,9 @@ class AnnotationController:
 
     def remove_current_from_annotation_pool(self) -> None:
         self._edit_controller.remove_current_from_annotation_pool()
+
+    def clear_all_annotations(self) -> None:
+        self._edit_controller.clear_all_annotations()
 
     # -- classes --------------------------------------------------------------
 

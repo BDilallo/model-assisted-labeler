@@ -21,7 +21,9 @@ from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
 from model_assisted_labeler.models.bounding_box import BoundingBox
-from model_assisted_labeler.ui.bounding_box_item import BoundingBoxItem
+from model_assisted_labeler.ui.canvas.bounding_box_item import (
+    BoundingBoxItem,
+)
 
 
 class ImageCanvas(QGraphicsView):

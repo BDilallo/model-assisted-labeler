@@ -6,17 +6,15 @@ from model_assisted_labeler.controllers.annotation_sources import (
     MODEL_SOURCE,
 )
 from model_assisted_labeler.controllers.session_context import SessionContext
-from model_assisted_labeler.models.annotation_session import (
-    AnnotationSession,
-    ClassDefinition,
-)
+from model_assisted_labeler.models.annotation_session import AnnotationSession
 from model_assisted_labeler.models.bounding_box import BoundingBox
+from model_assisted_labeler.models.class_definition import ClassDefinition
 from model_assisted_labeler.models.image_record import ImageRecord
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
-)
-from model_assisted_labeler.services.session_repository import (
-    SessionRepository,
 )
 
 

@@ -2,14 +2,14 @@ from model_assisted_labeler.controllers.session_context import SessionContext
 from model_assisted_labeler.models.annotation_session import AnnotationSession
 from model_assisted_labeler.models.image_record import ImageRecord
 from model_assisted_labeler.models.session_definition import SessionDefinition
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 from model_assisted_labeler.services.annotation_session_builder import (
     AnnotationSessionBuilder,
 )
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
-)
-from model_assisted_labeler.services.session_repository import (
-    SessionRepository,
 )
 
 

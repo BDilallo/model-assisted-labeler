@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
-from model_assisted_labeler.models.annotation_session import ClassDefinition
+from model_assisted_labeler.models.class_definition import ClassDefinition
 
 
 @dataclass

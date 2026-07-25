@@ -17,7 +17,9 @@ from model_assisted_labeler.geometry.bounding_box_geometry import (
     ResizeHandle,
 )
 from model_assisted_labeler.models.bounding_box import BoundingBox
-from model_assisted_labeler.ui.resize_handle_item import ResizeHandleItem
+from model_assisted_labeler.ui.canvas.resize_handle_item import (
+    ResizeHandleItem,
+)
 
 
 class BoundingBoxItem(QGraphicsRectItem):

@@ -10,7 +10,7 @@ from model_assisted_labeler.controllers.session_context import (
     validate_class_id,
 )
 from model_assisted_labeler.models.bounding_box import BoundingBox
-from model_assisted_labeler.services.session_repository import (
+from model_assisted_labeler.repositories.session_repository import (
     SessionRepository,
 )
 
@@ -136,6 +136,16 @@ class AnnotationEditController:
             saved_count += 1
 
         return saved_count
+
+    def clear_all_annotations(self) -> None:
+        """Discard every saved and unsaved annotation in the session."""
+        session = self._context.require_session()
+        definition = self._context.require_definition()
+
+        self._session_repository.clear_annotation_pool(definition)
+
+        for image_record in session.images:
+            image_record.mark_removed_from_pool()
 
     def remove_current_from_annotation_pool(self) -> None:
         image_record = self._context.require_current_image()

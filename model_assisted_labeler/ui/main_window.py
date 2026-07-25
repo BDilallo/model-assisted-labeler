@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -18,11 +19,14 @@ from PySide6.QtWidgets import (
 from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
-from model_assisted_labeler.ui.batch_auto_annotation_dialog import (
+from model_assisted_labeler.ui.canvas.image_canvas import ImageCanvas
+from model_assisted_labeler.ui.class_panel import ClassPanel
+from model_assisted_labeler.ui.dialogs.batch_auto_annotation_dialog import (
     BatchAutoAnnotationDialog,
 )
-from model_assisted_labeler.ui.class_panel import ClassPanel
-from model_assisted_labeler.ui.image_canvas import ImageCanvas
+from model_assisted_labeler.ui.filtered_image_navigator import (
+    FilteredImageNavigator,
+)
 from model_assisted_labeler.ui.image_filter_bar import ImageFilterBar
 
 
@@ -43,7 +47,10 @@ class MainWindow(QMainWindow):
         self._canvas = ImageCanvas(controller)
         self._class_panel = ClassPanel(controller, self._canvas)
         self._filter_bar = ImageFilterBar()
-        self._filtered_image_indexes: list[int] = []
+        self._navigator = FilteredImageNavigator(
+            controller,
+            self._filter_bar,
+        )
 
         self._session_label = QLabel()
         self._model_label = QLabel()
@@ -79,6 +86,10 @@ class MainWindow(QMainWindow):
             self,
         )
         self._clear_action = QAction("Clear Current Boxes", self)
+        self._clear_all_images_action = QAction(
+            "Clear All Images...",
+            self,
+        )
         self._delete_box_action = QAction("Delete Selected Box", self)
         self._remove_pool_action = QAction(
             "Remove from Annotation Pool",
@@ -163,6 +174,8 @@ class MainWindow(QMainWindow):
         navigate_menu.addAction(self._fit_action)
 
         annotation_menu = self.menuBar().addMenu("Annotations")
+        annotation_menu.addAction(self._clear_all_images_action)
+        annotation_menu.addSeparator()
         annotation_menu.addAction(self._predict_action)
         annotation_menu.addAction(self._replace_action)
         annotation_menu.addAction(self._batch_auto_annotate_action)
@@ -244,6 +257,9 @@ class MainWindow(QMainWindow):
         )
         self._clear_action.triggered.connect(
             self._clear_current_annotations
+        )
+        self._clear_all_images_action.triggered.connect(
+            self._clear_all_images
         )
         self._delete_box_action.triggered.connect(
             self._delete_selected_annotation
@@ -407,7 +423,7 @@ class MainWindow(QMainWindow):
         try:
             target_index = preferred_next_index
 
-            if target_index not in self._filtered_image_indexes:
+            if not self._navigator.contains(target_index):
                 target_index = self._next_matching_index()
 
             if target_index is None:
@@ -461,7 +477,7 @@ class MainWindow(QMainWindow):
 
             target_index = preferred_next_index
 
-            if target_index not in self._filtered_image_indexes:
+            if not self._navigator.contains(target_index):
                 target_index = self._next_matching_index()
 
             if target_index is not None:
@@ -661,6 +677,48 @@ class MainWindow(QMainWindow):
         self._refresh_current_filter_membership()
         self._refresh_interface()
 
+    def _clear_all_images(self) -> None:
+        if not self._controller.has_session:
+            return
+
+        typed_text, accepted = QInputDialog.getText(
+            self,
+            "Clear All Images",
+            (
+                "This permanently deletes every saved and unsaved "
+                "annotation and pooled image copy in this session. "
+                "Source images are not affected.\n\n"
+                "Type \"reset\" to confirm:"
+            ),
+        )
+
+        if not accepted:
+            return
+
+        if typed_text.strip().lower() != "reset":
+            QMessageBox.warning(
+                self,
+                "Clear All Images",
+                "Input did not match \"reset\". Nothing was changed.",
+            )
+            return
+
+        try:
+            self._controller.clear_all_annotations()
+        except Exception as error:
+            self._show_error(str(error))
+            return
+
+        self._canvas.refresh_annotations()
+        self._rebuild_filter_indexes()
+        self._ensure_current_filter_visibility()
+        self._restart_prefetch_timer()
+        self.statusBar().showMessage(
+            "All saved and unsaved images and annotations were cleared.",
+            5000,
+        )
+        self._refresh_interface()
+
     def _delete_selected_annotation(self) -> None:
         if self._canvas.delete_selected_annotation():
             self._refresh_current_filter_membership()
@@ -709,54 +767,10 @@ class MainWindow(QMainWindow):
         self._filter_bar.set_classes(classes)
 
     def _rebuild_filter_indexes(self) -> None:
-        session = self._controller.session
-
-        if session is None:
-            self._filtered_image_indexes = []
-            self._filter_bar.set_result_count(0, 0)
-            return
-
-        self._filtered_image_indexes = (
-            self._controller.image_indexes_matching(
-                filter_key=self._filter_bar.filter_key,
-                confidence_threshold=(
-                    self._filter_bar.confidence_threshold
-                ),
-                class_id=self._filter_bar.class_id,
-            )
-        )
-        self._filter_bar.set_result_count(
-            len(self._filtered_image_indexes),
-            session.image_count,
-        )
+        self._navigator.rebuild()
 
     def _refresh_current_filter_membership(self) -> None:
-        session = self._controller.session
-
-        if session is None or not session.images:
-            self._filtered_image_indexes = []
-            self._filter_bar.set_result_count(0, 0)
-            return
-
-        current_index = session.current_index
-        matches = self._controller.image_index_matches_filter(
-            image_index=current_index,
-            filter_key=self._filter_bar.filter_key,
-            confidence_threshold=self._filter_bar.confidence_threshold,
-            class_id=self._filter_bar.class_id,
-        )
-        currently_in_filter = current_index in self._filtered_image_indexes
-
-        if matches and not currently_in_filter:
-            self._filtered_image_indexes.append(current_index)
-            self._filtered_image_indexes.sort()
-        elif not matches and currently_in_filter:
-            self._filtered_image_indexes.remove(current_index)
-
-        self._filter_bar.set_result_count(
-            len(self._filtered_image_indexes),
-            session.image_count,
-        )
+        self._navigator.refresh_current_membership()
 
     def _apply_image_filter(self) -> None:
         try:
@@ -774,7 +788,9 @@ class MainWindow(QMainWindow):
         if session is None:
             return
 
-        if not self._filtered_image_indexes:
+        matching_indexes = self._navigator.matching_indexes
+
+        if not matching_indexes:
             if self._canvas.has_image:
                 self._prepare_canvas_for_navigation()
 
@@ -786,7 +802,7 @@ class MainWindow(QMainWindow):
 
         current_index = session.current_index
 
-        if current_index in self._filtered_image_indexes:
+        if current_index in matching_indexes:
             if not self._canvas.has_image:
                 self._controller.go_to_image(current_index)
                 self._display_current_image_with_auto_prediction()
@@ -795,17 +811,17 @@ class MainWindow(QMainWindow):
         target_index = next(
             (
                 index
-                for index in self._filtered_image_indexes
+                for index in matching_indexes
                 if index > current_index
             ),
-            self._filtered_image_indexes[-1],
+            matching_indexes[-1],
         )
         self._prepare_canvas_for_navigation()
         self._controller.go_to_image(target_index)
         self._display_current_image_with_auto_prediction()
 
     def _navigate_to_filtered_index(self, target_index: int) -> None:
-        if target_index not in self._filtered_image_indexes:
+        if not self._navigator.contains(target_index):
             return
 
         try:
@@ -819,52 +835,13 @@ class MainWindow(QMainWindow):
         self._refresh_interface()
 
     def _previous_matching_index(self) -> int | None:
-        session = self._controller.session
-
-        if session is None:
-            return None
-
-        previous_indexes = [
-            index
-            for index in self._filtered_image_indexes
-            if index < session.current_index
-        ]
-
-        if not previous_indexes:
-            return None
-
-        return previous_indexes[-1]
+        return self._navigator.previous_matching_index()
 
     def _next_matching_index(self) -> int | None:
-        session = self._controller.session
-
-        if session is None:
-            return None
-
-        return next(
-            (
-                index
-                for index in self._filtered_image_indexes
-                if index > session.current_index
-            ),
-            None,
-        )
+        return self._navigator.next_matching_index()
 
     def _filtered_current_position(self) -> int | None:
-        session = self._controller.session
-
-        if session is None:
-            return None
-
-        try:
-            return (
-                self._filtered_image_indexes.index(
-                    session.current_index
-                )
-                + 1
-            )
-        except ValueError:
-            return None
+        return self._navigator.current_position()
 
     def _prepare_canvas_for_navigation(self) -> None:
         """Safely release graphics items before changing images."""
@@ -881,24 +858,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if session.current_index in self._filtered_image_indexes:
-                filtered_position = self._filtered_image_indexes.index(
-                    session.current_index
-                )
-                start_position = max(
-                    0,
-                    filtered_position - self.PREFETCH_RADIUS,
-                )
-                end_position = min(
-                    len(self._filtered_image_indexes),
-                    filtered_position + self.PREFETCH_RADIUS + 1,
-                )
-                retained_indexes = self._filtered_image_indexes[
-                    start_position:end_position
-                ]
-            else:
-                retained_indexes = [session.current_index]
-
+            retained_indexes = self._navigator.prefetch_window(
+                self.PREFETCH_RADIUS
+            )
             self._controller.prefetch_annotation_indexes(
                 retained_indexes
             )
@@ -941,7 +903,7 @@ class MainWindow(QMainWindow):
             self._image_label.setText(
                 "Image: No supported top-level images found"
             )
-        elif not has_image and not self._filtered_image_indexes:
+        elif not has_image and not self._navigator.matching_indexes:
             self._image_label.setText(
                 "Image: No images match the selected filter"
             )
@@ -968,7 +930,7 @@ class MainWindow(QMainWindow):
             else:
                 position_text = (
                     f"{filtered_position}/"
-                    f"{len(self._filtered_image_indexes)} filtered | "
+                    f"{len(self._navigator.matching_indexes)} filtered | "
                     f"{session.current_position}/{session.image_count} total"
                 )
 
@@ -1021,6 +983,13 @@ class MainWindow(QMainWindow):
             and batch_candidate_count > 0
         )
         self._clear_action.setEnabled(interaction_enabled and has_boxes)
+        self._clear_all_images_action.setEnabled(
+            interaction_enabled
+            and (
+                self._controller.has_unsaved_changes()
+                or self._controller.total_images_annotated > 0
+            )
+        )
         self._delete_box_action.setEnabled(
             interaction_enabled and has_selection
         )

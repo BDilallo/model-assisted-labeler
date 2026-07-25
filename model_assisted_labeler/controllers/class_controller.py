@@ -2,12 +2,12 @@ from model_assisted_labeler.controllers.session_context import (
     SessionContext,
     validate_class_id,
 )
-from model_assisted_labeler.models.annotation_session import ClassDefinition
+from model_assisted_labeler.models.class_definition import ClassDefinition
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
-)
-from model_assisted_labeler.services.session_repository import (
-    SessionRepository,
 )
 
 

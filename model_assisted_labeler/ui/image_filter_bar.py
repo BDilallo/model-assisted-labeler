@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from model_assisted_labeler.models.annotation_session import ClassDefinition
+from model_assisted_labeler.models.class_definition import ClassDefinition
 
 
 class ImageFilterBar(QFrame):

@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 )
 
 from model_assisted_labeler.models.session_definition import SessionDefinition
-from model_assisted_labeler.services.session_repository import SessionRepository
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 
 
 class SessionLoadDialog(QDialog):

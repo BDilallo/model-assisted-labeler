@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
-from model_assisted_labeler.ui.image_canvas import ImageCanvas
+from model_assisted_labeler.ui.canvas.image_canvas import ImageCanvas
 
 
 class ClassPanel(QWidget):
