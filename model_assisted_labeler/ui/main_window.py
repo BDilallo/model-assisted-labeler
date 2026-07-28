@@ -3,6 +3,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressDialog,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -167,6 +169,16 @@ class MainWindow(QMainWindow):
             "The source image is never modified."
         )
 
+        for button in (self._save_button, self._save_next_button):
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
+            )
+            button.setProperty("cta", "primary")
+            button.setMinimumHeight(38)
+
+        self._remove_pool_button.setProperty("cta", "destructive")
+
     def _build_menu_bar(self) -> None:
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(self._export_dataset_action)
@@ -197,19 +209,21 @@ class MainWindow(QMainWindow):
     def _build_central_widget(self) -> None:
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
 
-        information_layout = QVBoxLayout()
+        self._model_label.setProperty("muted", "true")
+        self._pool_label.setProperty("muted", "true")
+
+        information_card = QFrame()
+        information_card.setProperty("card", "true")
+        information_layout = QVBoxLayout(information_card)
+        information_layout.setContentsMargins(12, 10, 12, 10)
+        information_layout.setSpacing(3)
         information_layout.addWidget(self._session_label)
         information_layout.addWidget(self._model_label)
         information_layout.addWidget(self._image_label)
         information_layout.addWidget(self._pool_label)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._canvas)
-        splitter.addWidget(self._class_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([1030, 290])
 
         prediction_layout = QVBoxLayout()
         prediction_layout.setSpacing(4)
@@ -219,25 +233,77 @@ class MainWindow(QMainWindow):
             self._batch_auto_annotate_button
         )
 
-        save_layout = QVBoxLayout()
-        save_layout.setSpacing(4)
-        save_layout.addWidget(self._save_button)
-        save_layout.addWidget(self._save_next_button)
+        # Back/Next live directly below the canvas, in their own column
+        # so they stay centered under it even as the splitter is resized.
+        canvas_footer_row = QHBoxLayout()
+        canvas_footer_row.addLayout(prediction_layout)
+        canvas_footer_row.addWidget(self._fit_button)
+        canvas_footer_row.addStretch(1)
+        canvas_footer_row.addWidget(self._back_button)
+        canvas_footer_row.addWidget(self._next_button)
+        canvas_footer_row.addStretch(1)
+        canvas_footer_row.addWidget(self._remove_pool_button)
 
-        controls_layout = QHBoxLayout()
-        controls_layout.addWidget(self._back_button)
-        controls_layout.addWidget(self._next_button)
-        controls_layout.addStretch(1)
-        controls_layout.addLayout(prediction_layout)
-        controls_layout.addWidget(self._fit_button)
-        controls_layout.addStretch(1)
-        controls_layout.addWidget(self._remove_pool_button)
-        controls_layout.addLayout(save_layout)
+        canvas_footer = QWidget()
+        canvas_footer_layout = QVBoxLayout(canvas_footer)
+        canvas_footer_layout.setContentsMargins(0, 6, 0, 0)
+        canvas_footer_layout.addStretch(1)
+        canvas_footer_layout.addLayout(canvas_footer_row)
+        canvas_footer_layout.addStretch(1)
 
-        main_layout.addLayout(information_layout)
+        canvas_container = QFrame()
+        canvas_container.setProperty("card", "true")
+        canvas_container_layout = QVBoxLayout(canvas_container)
+        canvas_container_layout.setContentsMargins(8, 8, 8, 8)
+        canvas_container_layout.setSpacing(0)
+        canvas_container_layout.addWidget(self._canvas, stretch=1)
+        canvas_container_layout.addWidget(canvas_footer)
+
+        # Save/Save & Next live directly below the class panel, as large
+        # tiles spanning that column's full width.
+        save_tile_row = QHBoxLayout()
+        save_tile_row.setSpacing(6)
+        save_tile_row.addWidget(self._save_button, stretch=1)
+        save_tile_row.addWidget(self._save_next_button, stretch=1)
+
+        save_tile_container = QWidget()
+        save_tile_container_layout = QVBoxLayout(save_tile_container)
+        save_tile_container_layout.setContentsMargins(0, 6, 0, 0)
+        save_tile_container_layout.addLayout(save_tile_row)
+
+        class_panel_container = QFrame()
+        class_panel_container.setProperty("card", "true")
+        class_panel_container_layout = QVBoxLayout(class_panel_container)
+        class_panel_container_layout.setContentsMargins(10, 10, 10, 10)
+        class_panel_container_layout.setSpacing(0)
+        class_panel_container_layout.addWidget(
+            self._class_panel,
+            stretch=1,
+        )
+        class_panel_container_layout.addWidget(save_tile_container)
+
+        # Both footers share one height so the class panel's bottom edge
+        # (the Apply Class button) stays level with the canvas's bottom
+        # edge, regardless of which footer's own content is taller.
+        footer_height = max(
+            canvas_footer.sizeHint().height(),
+            save_tile_container.sizeHint().height(),
+        )
+        canvas_footer.setFixedHeight(footer_height)
+        save_tile_container.setFixedHeight(footer_height)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(10)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(canvas_container)
+        splitter.addWidget(class_panel_container)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([1030, 290])
+
+        main_layout.addWidget(information_card)
         main_layout.addWidget(self._filter_bar)
         main_layout.addWidget(splitter, stretch=1)
-        main_layout.addLayout(controls_layout)
         self.setCentralWidget(central_widget)
 
     def _build_status_bar(self) -> None:

@@ -60,6 +60,7 @@ class DatasetExportDialog(QDialog):
         self._validation_spin.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._preview_label = QLabel()
+        self._preview_label.setProperty("muted", "true")
 
         self._shuffle_checkbox = QCheckBox("Shuffle images before splitting")
         self._shuffle_checkbox.setChecked(True)
@@ -96,12 +97,14 @@ class DatasetExportDialog(QDialog):
 
         heading = QLabel("Export Dataset")
         heading.setObjectName("datasetExportHeading")
+        heading.setProperty("heading", "true")
         main_layout.addWidget(heading)
 
         summary = QLabel(
             f"{self._pooled_image_count} saved image(s) are available "
             "to export."
         )
+        summary.setProperty("muted", "true")
         main_layout.addWidget(summary)
 
         if has_unsaved_changes:
@@ -110,7 +113,7 @@ class DatasetExportDialog(QDialog):
                 "included. Save first for a complete export."
             )
             warning.setWordWrap(True)
-            warning.setStyleSheet("color: #b45309;")
+            warning.setProperty("warning", "true")
             main_layout.addWidget(warning)
 
         form_layout = QFormLayout()
@@ -145,6 +148,8 @@ class DatasetExportDialog(QDialog):
         if export_button is not None:
             export_button.setText("Export")
             export_button.setDefault(True)
+            export_button.setProperty("cta", "primary")
+            export_button.setMinimumHeight(32)
 
         main_layout.addWidget(buttons)
 

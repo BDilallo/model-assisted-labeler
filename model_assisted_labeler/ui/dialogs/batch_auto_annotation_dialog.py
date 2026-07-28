@@ -80,6 +80,8 @@ class BatchAutoAnnotationDialog(QDialog):
         if confirm_button is not None:
             confirm_button.setText("Confirm")
             confirm_button.setDefault(True)
+            confirm_button.setProperty("cta", "primary")
+            confirm_button.setMinimumHeight(32)
 
         layout = QVBoxLayout(self)
         layout.addWidget(prompt)

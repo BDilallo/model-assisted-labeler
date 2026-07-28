@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -591,6 +592,7 @@ class ImageCanvas(QGraphicsView):
     def _configure_view(self) -> None:
         """Configure graphics-view behavior and appearance."""
         self.setScene(self._graphics_scene)
+        self.setFrameShape(QFrame.Shape.NoFrame)
 
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing

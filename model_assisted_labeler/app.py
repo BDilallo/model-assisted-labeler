@@ -38,6 +38,7 @@ from model_assisted_labeler.ui.dialogs.startup_dialog import (
     StartupDialog,
 )
 from model_assisted_labeler.ui.main_window import MainWindow
+from model_assisted_labeler.ui.theme import apply_theme
 
 
 def _resolve_workspace_root(
@@ -164,6 +165,7 @@ def main() -> int:
     # shows ghosted content from behind the popup. Fusion draws its own
     # popups and avoids that glitch.
     application.setStyle("Fusion")
+    apply_theme(application)
 
     settings_repository = ApplicationSettingsRepository()
     workspace_root = _resolve_workspace_root(settings_repository)
