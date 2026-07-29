@@ -8,14 +8,18 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QProgressDialog,
     QSizePolicy,
     QSplitter,
     QStatusBar,
+    QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from model_assisted_labeler.controllers.application_controller import (
@@ -26,8 +30,8 @@ from model_assisted_labeler.ui.class_panel import ClassPanel
 from model_assisted_labeler.services.dataset_export_service import (
     DatasetExportCancelled,
 )
-from model_assisted_labeler.ui.dialogs.batch_auto_annotation_dialog import (
-    BatchAutoAnnotationDialog,
+from model_assisted_labeler.ui.batch_auto_annotation_panel import (
+    BatchAutoAnnotationPanel,
 )
 from model_assisted_labeler.ui.dialogs.dataset_export_dialog import (
     DatasetExportDialog,
@@ -69,9 +73,6 @@ class MainWindow(QMainWindow):
         self._next_button = QPushButton("Next")
         self._predict_button = QPushButton("Predict / Refresh")
         self._auto_predict_button = QPushButton("Auto Predict: Off")
-        self._batch_auto_annotate_button = QPushButton(
-            "Batch Auto Annotate..."
-        )
         self._fit_button = QPushButton("Fit")
         self._save_button = QPushButton("Save")
         self._save_next_button = QPushButton("Save && Next")
@@ -107,6 +108,9 @@ class MainWindow(QMainWindow):
         self._fit_action = QAction("Fit Image", self)
         self._exit_action = QAction("Exit", self)
 
+        self._batch_panel = BatchAutoAnnotationPanel(self)
+        self._batch_tool_button = QToolButton()
+
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.setInterval(self.PREFETCH_DELAY_MS)
@@ -116,6 +120,7 @@ class MainWindow(QMainWindow):
         self._configure_actions()
         self._configure_buttons()
         self._build_menu_bar()
+        self._build_top_bar()
         self._build_central_widget()
         self._build_status_bar()
         self._connect_signals()
@@ -160,10 +165,6 @@ class MainWindow(QMainWindow):
         self._predict_button.setToolTip(
             "Run or refresh prediction for the current image."
         )
-        self._batch_auto_annotate_button.setToolTip(
-            "Predict and save every clean image that is not already in "
-            "the annotation pool."
-        )
         self._remove_pool_button.setToolTip(
             "Delete only the session-owned image copy and annotation. "
             "The source image is never modified."
@@ -206,6 +207,34 @@ class MainWindow(QMainWindow):
         annotation_menu.addSeparator()
         annotation_menu.addAction(self._remove_pool_action)
 
+    def _build_top_bar(self) -> None:
+        top_bar = QToolBar("Batch", self)
+        top_bar.setObjectName("topBar")
+        top_bar.setMovable(False)
+        top_bar.setFloatable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, top_bar)
+
+        menu = QMenu(self._batch_tool_button)
+        panel_action = QWidgetAction(menu)
+        panel_action.setDefaultWidget(self._batch_panel)
+        menu.addAction(panel_action)
+        menu.aboutToShow.connect(self._refresh_batch_panel)
+
+        self._batch_tool_button.setText("Batch Auto Annotate")
+        self._batch_tool_button.setToolTip(
+            "Predict and save every clean image that is not already in "
+            "the annotation pool."
+        )
+        self._batch_tool_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        self._batch_tool_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self._batch_tool_button.setMenu(menu)
+
+        top_bar.addWidget(self._batch_tool_button)
+
     def _build_central_widget(self) -> None:
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
@@ -229,9 +258,6 @@ class MainWindow(QMainWindow):
         prediction_layout.setSpacing(4)
         prediction_layout.addWidget(self._predict_button)
         prediction_layout.addWidget(self._auto_predict_button)
-        prediction_layout.addWidget(
-            self._batch_auto_annotate_button
-        )
 
         # Back/Next live directly below the canvas, in their own column
         # so they stay centered under it even as the splitter is resized.
@@ -331,7 +357,7 @@ class MainWindow(QMainWindow):
             self._replace_with_predictions
         )
         self._batch_auto_annotate_action.triggered.connect(
-            self._batch_auto_annotate
+            self._batch_tool_button.showMenu
         )
         self._clear_action.triggered.connect(
             self._clear_current_annotations
@@ -356,8 +382,8 @@ class MainWindow(QMainWindow):
         self._auto_predict_button.toggled.connect(
             self._handle_auto_predict_toggled
         )
-        self._batch_auto_annotate_button.clicked.connect(
-            self._batch_auto_annotate
+        self._batch_panel.run_requested.connect(
+            self._run_batch_auto_annotate
         )
         self._fit_button.clicked.connect(self._canvas.fit_to_image)
         self._save_button.clicked.connect(self._save_current_image)
@@ -680,10 +706,23 @@ class MainWindow(QMainWindow):
         )
         self._refresh_interface()
 
-    def _batch_auto_annotate(self) -> None:
+    def _refresh_batch_panel(self) -> None:
         candidate_count = (
             self._controller.batch_auto_annotation_candidate_count()
         )
+        self._batch_panel.set_candidate_count(candidate_count)
+        self._batch_panel.set_gpu_available(
+            self._controller.cuda_is_available
+        )
+        self._batch_panel.set_run_enabled(
+            self._controller.model_is_loaded
+        )
+
+    def _run_batch_auto_annotate(self) -> None:
+        candidate_count = (
+            self._controller.batch_auto_annotation_candidate_count()
+        )
+        self._batch_tool_button.menu().hide()
 
         if candidate_count == 0:
             QMessageBox.information(
@@ -696,13 +735,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dialog = BatchAutoAnnotationDialog(
-            image_count=candidate_count,
-            parent=self,
-        )
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+        confidence_threshold = self._batch_panel.confidence_threshold
+        batch_size = self._batch_panel.batch_size
+        device = self._batch_panel.device
 
         progress_dialog = QProgressDialog(
             "Preparing batch annotation...",
@@ -737,7 +772,9 @@ class MainWindow(QMainWindow):
 
         try:
             result = self._controller.batch_auto_annotate(
-                confidence_threshold=dialog.confidence_threshold,
+                confidence_threshold=confidence_threshold,
+                batch_size=batch_size,
+                device=device,
                 progress_callback=update_progress,
                 cancellation_requested=(
                     progress_dialog.wasCanceled
@@ -1167,6 +1204,13 @@ class MainWindow(QMainWindow):
             and has_model
             and batch_candidate_count > 0
         )
+        self._batch_tool_button.setEnabled(
+            interaction_enabled
+            and has_model
+            and batch_candidate_count > 0
+        )
+        self._batch_panel.set_candidate_count(batch_candidate_count)
+        self._batch_panel.set_run_enabled(has_model)
         self._clear_action.setEnabled(interaction_enabled and has_boxes)
         self._clear_all_images_action.setEnabled(
             interaction_enabled
@@ -1188,11 +1232,6 @@ class MainWindow(QMainWindow):
         )
         self._auto_predict_button.setEnabled(
             interaction_enabled and has_model and has_image
-        )
-        self._batch_auto_annotate_button.setEnabled(
-            interaction_enabled
-            and has_model
-            and batch_candidate_count > 0
         )
         self._fit_button.setEnabled(
             interaction_enabled and self._canvas.has_image

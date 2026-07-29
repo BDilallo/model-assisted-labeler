@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from model_assisted_labeler.models.annotation_session import AnnotationSession
 from model_assisted_labeler.models.image_record import ImageRecord
 from model_assisted_labeler.models.session_definition import SessionDefinition
@@ -5,6 +7,13 @@ from model_assisted_labeler.repositories.session_repository import (
     SessionRepository,
 )
 from model_assisted_labeler.services.image_service import ImageService
+
+ProgressCallback = Callable[[int, int, str], None]
+CancellationCallback = Callable[[], bool]
+
+
+class SessionBuildCancelled(Exception):
+    """Raised when the caller reports cancellation mid-build."""
 
 
 class AnnotationSessionBuilder:
@@ -21,6 +30,8 @@ class AnnotationSessionBuilder:
     def build(
         self,
         definition: SessionDefinition,
+        progress_callback: ProgressCallback | None = None,
+        cancellation_requested: CancellationCallback | None = None,
     ) -> AnnotationSession:
         """
         Discover only top-level source images.
@@ -28,6 +39,11 @@ class AnnotationSessionBuilder:
         Annotation files are intentionally not loaded here. The
         controller loads the current image immediately and prefetches a
         small surrounding window after navigation settles.
+
+        Reading each image's dimensions requires opening every file, so
+        for large directories this can take a while. ``progress_callback``
+        and ``cancellation_requested`` let a caller keep the UI responsive
+        and let the user abort, mirroring dataset export/batch annotate.
         """
         image_paths = self.image_service.discover_images(
             directory=definition.image_directory,
@@ -35,8 +51,18 @@ class AnnotationSessionBuilder:
         )
 
         image_records: list[ImageRecord] = []
+        total_images = len(image_paths)
 
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            if (
+                cancellation_requested is not None
+                and cancellation_requested()
+            ):
+                raise SessionBuildCancelled()
+
+            if progress_callback is not None:
+                progress_callback(index, total_images, image_path.name)
+
             width, height = self.image_service.get_dimensions(image_path)
             label_path = self.session_repository.annotation_path_for(
                 definition,

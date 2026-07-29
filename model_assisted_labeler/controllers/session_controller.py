@@ -7,6 +7,8 @@ from model_assisted_labeler.repositories.session_repository import (
 )
 from model_assisted_labeler.services.annotation_session_builder import (
     AnnotationSessionBuilder,
+    CancellationCallback,
+    ProgressCallback,
 )
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
@@ -31,6 +33,8 @@ class SessionController:
     def open_session_definition(
         self,
         definition: SessionDefinition,
+        progress_callback: ProgressCallback | None = None,
+        cancellation_requested: CancellationCallback | None = None,
     ) -> AnnotationSession:
         if self._context.has_unsaved_changes():
             raise RuntimeError(
@@ -50,7 +54,11 @@ class SessionController:
         else:
             self._model_runner.unload_model()
 
-        new_session = self._session_builder.build(definition)
+        new_session = self._session_builder.build(
+            definition,
+            progress_callback=progress_callback,
+            cancellation_requested=cancellation_requested,
+        )
 
         self._context.set_session(new_session, definition)
         self.prepare_current_image()

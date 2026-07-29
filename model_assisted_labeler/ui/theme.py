@@ -142,6 +142,19 @@ def build_stylesheet() -> str:
         padding: 2px;
     }}
 
+    QToolBar#topBar {{
+        background-color: {Color.BASE};
+        border: none;
+        border-bottom: 1px solid {Color.BORDER};
+        padding: 4px 8px;
+        spacing: 6px;
+    }}
+
+    QToolBar#topBar QToolButton {{
+        border-radius: 4px;
+        padding: 5px 12px;
+    }}
+
     QMenuBar::item {{
         background: transparent;
         padding: 4px 10px;

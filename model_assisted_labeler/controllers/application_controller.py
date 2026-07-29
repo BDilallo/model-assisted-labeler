@@ -163,9 +163,15 @@ class AnnotationController:
             self._model_controller.batch_auto_annotation_candidate_count()
         )
 
+    @property
+    def cuda_is_available(self) -> bool:
+        return self._model_controller.cuda_is_available
+
     def batch_auto_annotate(
         self,
         confidence_threshold: float,
+        batch_size: int = ModelController.DEFAULT_BATCH_SIZE,
+        device: str | int | None = None,
         progress_callback: (
             Callable[[int, int, str], None] | None
         ) = None,
@@ -173,6 +179,8 @@ class AnnotationController:
     ) -> BatchAutoAnnotationResult:
         return self._model_controller.batch_auto_annotate(
             confidence_threshold,
+            batch_size=batch_size,
+            device=device,
             progress_callback=progress_callback,
             cancellation_requested=cancellation_requested,
         )
@@ -188,8 +196,16 @@ class AnnotationController:
     def open_session_definition(
         self,
         definition: SessionDefinition,
+        progress_callback: (
+            Callable[[int, int, str], None] | None
+        ) = None,
+        cancellation_requested: Callable[[], bool] | None = None,
     ) -> AnnotationSession:
-        return self._session_controller.open_session_definition(definition)
+        return self._session_controller.open_session_definition(
+            definition,
+            progress_callback=progress_callback,
+            cancellation_requested=cancellation_requested,
+        )
 
     def close_session(
         self,

@@ -15,6 +15,7 @@ from model_assisted_labeler.repositories.session_repository import (
 )
 from model_assisted_labeler.services.model_runner import (
     DetectionModelRunner,
+    cuda_is_available,
 )
 
 
@@ -31,6 +32,8 @@ class BatchAutoAnnotationResult:
 
 class ModelController:
     """Load detection models and run predictions against a session."""
+
+    DEFAULT_BATCH_SIZE = 8
 
     def __init__(
         self,
@@ -49,6 +52,10 @@ class ModelController:
     @property
     def model_path(self) -> Path | None:
         return self._model_runner.model_path
+
+    @property
+    def cuda_is_available(self) -> bool:
+        return cuda_is_available()
 
     def load_model(self, model_path: Path) -> None:
         self._model_runner.load_model(model_path)
@@ -105,6 +112,8 @@ class ModelController:
     def batch_auto_annotate(
         self,
         confidence_threshold: float,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        device: str | int | None = None,
         progress_callback: (
             Callable[[int, int, str], None] | None
         ) = None,
@@ -116,12 +125,21 @@ class ModelController:
         unsaved work are never modified. An eligible image is saved only
         when at least one supported model box meets the supplied minimum
         confidence.
+
+        Images are sent to the model in groups of ``batch_size`` so the
+        forward pass is batched rather than run one image at a time,
+        which is significantly faster for large candidate sets.
+        ``device`` overrides the runner's configured device for this run
+        only ("cpu", a GPU index, or None for automatic selection).
         """
         if not 0.0 <= confidence_threshold < 1.0:
             raise ValueError(
                 "Confidence threshold must be at least 0 and less "
                 "than 1."
             )
+
+        if batch_size < 1:
+            raise ValueError("Batch size must be at least 1.")
 
         session = self._context.require_session()
         definition = self._context.require_definition()
@@ -141,7 +159,7 @@ class ModelController:
         cancelled = False
 
         try:
-            for image_record in candidates:
+            for chunk in self._chunked(candidates, batch_size):
                 if (
                     cancellation_requested is not None
                     and cancellation_requested()
@@ -149,56 +167,56 @@ class ModelController:
                     cancelled = True
                     break
 
-                try:
-                    raw_predictions = self._model_runner.predict(
-                        image_record.image_path,
-                        confidence_threshold=confidence_threshold,
-                    )
-                except Exception as error:
-                    raise RuntimeError(
-                        "Batch auto annotation failed for "
-                        f"'{image_record.filename}': {error}"
-                    ) from error
+                chunk_predictions = self._predict_chunk(
+                    chunk,
+                    confidence_threshold=confidence_threshold,
+                    batch_size=batch_size,
+                    device=device,
+                )
 
-                predictions = [
-                    box
-                    for box in self._supported_predictions(
-                        session,
-                        raw_predictions,
-                    )
-                    if (
-                        box.confidence is not None
-                        and box.confidence >= confidence_threshold
-                    )
-                ]
+                for image_record, raw_predictions in zip(
+                    chunk,
+                    chunk_predictions,
+                ):
+                    predictions = [
+                        box
+                        for box in self._supported_predictions(
+                            session,
+                            raw_predictions,
+                        )
+                        if (
+                            box.confidence is not None
+                            and box.confidence >= confidence_threshold
+                        )
+                    ]
 
-                if predictions:
-                    image_record.replace_annotations(predictions)
-                    self._session_repository.save_image_to_pool(
-                        definition,
-                        image_record,
-                        refresh_session_info=False,
-                    )
-                    image_record.mark_saved()
-                    saved_count += 1
-                else:
-                    image_record.annotations = []
-                    image_record.annotations_loaded = True
-                    image_record.is_dirty = False
-                    image_record.mark_predictions_loaded()
-                    rejected_count += 1
+                    if predictions:
+                        image_record.replace_annotations(predictions)
+                        self._session_repository.save_image_to_pool(
+                            definition,
+                            image_record,
+                            refresh_session_info=False,
+                        )
+                        image_record.mark_saved()
+                        saved_count += 1
+                    else:
+                        image_record.annotations = []
+                        image_record.annotations_loaded = True
+                        image_record.is_dirty = False
+                        image_record.mark_predictions_loaded()
+                        rejected_count += 1
 
-                processed_count += 1
+                    processed_count += 1
 
-                if progress_callback is not None:
-                    progress_callback(
-                        processed_count,
-                        candidate_count,
-                        image_record.filename,
-                    )
+                    if progress_callback is not None:
+                        progress_callback(
+                            processed_count,
+                            candidate_count,
+                            image_record.filename,
+                        )
 
-                if image_record is not session.current_image:
-                    image_record.unload_annotations()
+                    if image_record is not session.current_image:
+                        image_record.unload_annotations()
 
         finally:
             self._session_repository.save_session_info(definition)
@@ -210,6 +228,63 @@ class ModelController:
             rejected_images=rejected_count,
             cancelled=cancelled,
         )
+
+    def _predict_chunk(
+        self,
+        chunk: list[ImageRecord],
+        confidence_threshold: float,
+        batch_size: int,
+        device: str | int | None,
+    ) -> list[list[BoundingBox]]:
+        """Predict one batched chunk, falling back to per-image calls.
+
+        A single unreadable or corrupt image can fail the whole batched
+        forward pass. Falling back to one-at-a-time prediction for just
+        that chunk keeps the run going and reports exactly which image
+        failed, instead of losing the whole chunk's progress.
+        """
+        image_paths = [
+            image_record.image_path for image_record in chunk
+        ]
+
+        try:
+            return self._model_runner.predict_batch(
+                image_paths,
+                confidence_threshold=confidence_threshold,
+                batch_size=batch_size,
+                device=device,
+            )
+        except Exception:
+            pass
+
+        results: list[list[BoundingBox]] = []
+
+        for image_record in chunk:
+            try:
+                results.append(
+                    self._model_runner.predict(
+                        image_record.image_path,
+                        confidence_threshold=confidence_threshold,
+                    )
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    "Batch auto annotation failed for "
+                    f"'{image_record.filename}': {error}"
+                ) from error
+
+        return results
+
+    @staticmethod
+    def _chunked(
+        items: list[ImageRecord],
+        size: int,
+    ) -> list[list[ImageRecord]]:
+        size = max(1, size)
+        return [
+            items[index:index + size]
+            for index in range(0, len(items), size)
+        ]
 
     def predict_current_image(self) -> list[BoundingBox]:
         session = self._context.require_session()

@@ -1,7 +1,13 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QProgressDialog,
+)
 
 from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
@@ -19,6 +25,7 @@ from model_assisted_labeler.repositories.session_repository import (
 )
 from model_assisted_labeler.services.annotation_session_builder import (
     AnnotationSessionBuilder,
+    SessionBuildCancelled,
 )
 from model_assisted_labeler.services.image_service import ImageService
 from model_assisted_labeler.services.model_runner import (
@@ -156,6 +163,53 @@ def _choose_session(
                 return definition
 
 
+def _open_session_with_progress(
+    controller: AnnotationController,
+    definition: SessionDefinition,
+) -> bool:
+    """
+    Open a session while keeping the UI responsive.
+
+    Reading every source image's dimensions requires opening each file,
+    which can take a while for large directories. A progress dialog
+    pumps the event loop between images so the app never appears frozen
+    and the user can cancel instead of force-killing it.
+    """
+    progress_dialog = QProgressDialog(
+        "Scanning source images...",
+        "Cancel",
+        0,
+        0,
+    )
+    progress_dialog.setWindowTitle("Opening Session")
+    progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+    progress_dialog.setMinimumDuration(0)
+    progress_dialog.setAutoClose(False)
+    progress_dialog.setAutoReset(False)
+    progress_dialog.setValue(0)
+
+    def update_progress(completed: int, total: int, filename: str) -> None:
+        progress_dialog.setMaximum(total)
+        progress_dialog.setLabelText(
+            f"Scanning {completed} of {total}: {filename}"
+        )
+        progress_dialog.setValue(completed)
+        QApplication.processEvents()
+
+    try:
+        controller.open_session_definition(
+            definition,
+            progress_callback=update_progress,
+            cancellation_requested=progress_dialog.wasCanceled,
+        )
+    except SessionBuildCancelled:
+        return False
+    finally:
+        progress_dialog.close()
+
+    return True
+
+
 def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Model-Assisted Labeler")
@@ -189,7 +243,8 @@ def main() -> int:
         return 0
 
     try:
-        controller.open_session_definition(definition)
+        if not _open_session_with_progress(controller, definition):
+            return 0
     except Exception as error:
         QMessageBox.critical(
             None,
