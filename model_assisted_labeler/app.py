@@ -19,6 +19,9 @@ from model_assisted_labeler.repositories.annotation_store import (
 from model_assisted_labeler.repositories.application_settings import (
     ApplicationSettingsRepository,
 )
+from model_assisted_labeler.repositories.image_dimensions_cache_repository import (
+    ImageDimensionsCacheRepository,
+)
 from model_assisted_labeler.repositories.session_repository import (
     SessionAlreadyExistsError,
     SessionRepository,
@@ -87,9 +90,11 @@ def _build_controller(
     annotation_store: YoloAnnotationStore,
 ) -> AnnotationController:
     image_service = ImageService()
+    dimensions_cache_repository = ImageDimensionsCacheRepository()
     session_builder = AnnotationSessionBuilder(
         image_service=image_service,
         session_repository=session_repository,
+        dimensions_cache_repository=dimensions_cache_repository,
     )
     model_runner = UltralyticsDetectionRunner()
 
