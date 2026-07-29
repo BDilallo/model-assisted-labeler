@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from model_assisted_labeler.controllers.annotation_controller import (
+from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
-from model_assisted_labeler.models.annotation_session import ClassDefinition
+from model_assisted_labeler.models.class_definition import ClassDefinition
 
 
 @dataclass
@@ -77,6 +77,7 @@ class SessionCreationDialog(QDialog):
 
         heading = QLabel("Create New Annotation Session")
         heading.setObjectName("sessionCreationHeading")
+        heading.setProperty("heading", "true")
         main_layout.addWidget(heading)
 
         form_layout = QFormLayout()
@@ -93,6 +94,7 @@ class SessionCreationDialog(QDialog):
             "Subfolders are never searched or modified."
         )
         image_note.setWordWrap(True)
+        image_note.setProperty("muted", "true")
         form_layout.addRow("", image_note)
 
         model_row = QHBoxLayout()
@@ -109,6 +111,7 @@ class SessionCreationDialog(QDialog):
             "the session class list."
         )
         model_note.setWordWrap(True)
+        model_note.setProperty("muted", "true")
         form_layout.addRow("", model_note)
 
         main_layout.addLayout(form_layout)
@@ -121,6 +124,7 @@ class SessionCreationDialog(QDialog):
         class_controls.addWidget(self._new_class_edit, stretch=1)
         add_class_button = QPushButton("Add Class")
         remove_class_button = QPushButton("Remove Selected")
+        remove_class_button.setProperty("cta", "destructive")
         class_controls.addWidget(add_class_button)
         class_controls.addWidget(remove_class_button)
         main_layout.addLayout(class_controls)
@@ -135,6 +139,8 @@ class SessionCreationDialog(QDialog):
 
         if create_button is not None:
             create_button.setText("Create Session")
+            create_button.setProperty("cta", "primary")
+            create_button.setMinimumHeight(32)
 
         main_layout.addWidget(buttons)
 

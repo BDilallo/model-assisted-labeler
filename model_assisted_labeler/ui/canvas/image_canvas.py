@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -17,11 +18,13 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from model_assisted_labeler.controllers.annotation_controller import (
+from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
 from model_assisted_labeler.models.bounding_box import BoundingBox
-from model_assisted_labeler.ui.bounding_box_item import BoundingBoxItem
+from model_assisted_labeler.ui.canvas.bounding_box_item import (
+    BoundingBoxItem,
+)
 
 
 class ImageCanvas(QGraphicsView):
@@ -327,6 +330,10 @@ class ImageCanvas(QGraphicsView):
         """
         Start drawing on empty image space or pass interaction to an
         existing graphics item.
+
+        Holding Alt always starts a new box, even when the press lands
+        on top of an existing one, so overlapping and nested boxes can
+        be drawn without first moving anything out of the way.
         """
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
@@ -337,11 +344,16 @@ class ImageCanvas(QGraphicsView):
             return
 
         view_position = event.position().toPoint()
-        clicked_item = self.itemAt(view_position)
+        force_new_box = bool(
+            event.modifiers() & Qt.KeyboardModifier.AltModifier
+        )
 
-        if self._find_bounding_box_item(clicked_item) is not None:
-            super().mousePressEvent(event)
-            return
+        if not force_new_box:
+            clicked_item = self.itemAt(view_position)
+
+            if self._find_bounding_box_item(clicked_item) is not None:
+                super().mousePressEvent(event)
+                return
 
         scene_position = self.mapToScene(view_position)
 
@@ -589,6 +601,7 @@ class ImageCanvas(QGraphicsView):
     def _configure_view(self) -> None:
         """Configure graphics-view behavior and appearance."""
         self.setScene(self._graphics_scene)
+        self.setFrameShape(QFrame.Shape.NoFrame)
 
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing
@@ -609,6 +622,11 @@ class ImageCanvas(QGraphicsView):
 
         self.setFocusPolicy(
             Qt.FocusPolicy.StrongFocus
+        )
+
+        self.setToolTip(
+            "Drag on empty space to draw a box. Hold Alt and drag to "
+            "draw a new box on top of or inside an existing one."
         )
 
         self.setBackgroundBrush(

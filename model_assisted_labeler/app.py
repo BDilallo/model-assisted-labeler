@@ -1,41 +1,54 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QProgressDialog,
+)
 
-from model_assisted_labeler.controllers.annotation_controller import (
+from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
 from model_assisted_labeler.models.session_definition import SessionDefinition
-from model_assisted_labeler.services.annotation_session_builder import (
-    AnnotationSessionBuilder,
-)
-from model_assisted_labeler.services.annotation_store import (
+from model_assisted_labeler.repositories.annotation_store import (
     YoloAnnotationStore,
 )
-from model_assisted_labeler.services.application_settings import (
+from model_assisted_labeler.repositories.application_settings import (
     ApplicationSettingsRepository,
+)
+from model_assisted_labeler.repositories.image_dimensions_cache_repository import (
+    ImageDimensionsCacheRepository,
+)
+from model_assisted_labeler.repositories.session_repository import (
+    SessionAlreadyExistsError,
+    SessionRepository,
+)
+from model_assisted_labeler.services.annotation_session_builder import (
+    AnnotationSessionBuilder,
+    SessionBuildCancelled,
 )
 from model_assisted_labeler.services.image_service import ImageService
 from model_assisted_labeler.services.model_runner import (
     UltralyticsDetectionRunner,
 )
-from model_assisted_labeler.services.session_repository import (
-    SessionAlreadyExistsError,
-    SessionRepository,
-)
-from model_assisted_labeler.ui.main_window import MainWindow
-from model_assisted_labeler.ui.session_creation_dialog import (
+from model_assisted_labeler.ui.dialogs.session_creation_dialog import (
     SessionCreationDialog,
 )
-from model_assisted_labeler.ui.session_load_dialog import SessionLoadDialog
-from model_assisted_labeler.ui.session_review_dialog import (
+from model_assisted_labeler.ui.dialogs.session_load_dialog import (
+    SessionLoadDialog,
+)
+from model_assisted_labeler.ui.dialogs.session_review_dialog import (
     SessionReviewDialog,
 )
-from model_assisted_labeler.ui.startup_dialog import (
+from model_assisted_labeler.ui.dialogs.startup_dialog import (
     SaveLocationDialog,
     StartupDialog,
 )
+from model_assisted_labeler.ui.main_window import MainWindow
+from model_assisted_labeler.ui.theme import apply_theme
 
 
 def _resolve_workspace_root(
@@ -77,9 +90,11 @@ def _build_controller(
     annotation_store: YoloAnnotationStore,
 ) -> AnnotationController:
     image_service = ImageService()
+    dimensions_cache_repository = ImageDimensionsCacheRepository()
     session_builder = AnnotationSessionBuilder(
         image_service=image_service,
         session_repository=session_repository,
+        dimensions_cache_repository=dimensions_cache_repository,
     )
     model_runner = UltralyticsDetectionRunner()
 
@@ -153,10 +168,63 @@ def _choose_session(
                 return definition
 
 
+def _open_session_with_progress(
+    controller: AnnotationController,
+    definition: SessionDefinition,
+) -> bool:
+    """
+    Open a session while keeping the UI responsive.
+
+    Reading every source image's dimensions requires opening each file,
+    which can take a while for large directories. A progress dialog
+    pumps the event loop between images so the app never appears frozen
+    and the user can cancel instead of force-killing it.
+    """
+    progress_dialog = QProgressDialog(
+        "Scanning source images...",
+        "Cancel",
+        0,
+        0,
+    )
+    progress_dialog.setWindowTitle("Opening Session")
+    progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+    progress_dialog.setMinimumDuration(0)
+    progress_dialog.setAutoClose(False)
+    progress_dialog.setAutoReset(False)
+    progress_dialog.setValue(0)
+
+    def update_progress(completed: int, total: int, filename: str) -> None:
+        progress_dialog.setMaximum(total)
+        progress_dialog.setLabelText(
+            f"Scanning {completed} of {total}: {filename}"
+        )
+        progress_dialog.setValue(completed)
+        QApplication.processEvents()
+
+    try:
+        controller.open_session_definition(
+            definition,
+            progress_callback=update_progress,
+            cancellation_requested=progress_dialog.wasCanceled,
+        )
+    except SessionBuildCancelled:
+        return False
+    finally:
+        progress_dialog.close()
+
+    return True
+
+
 def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Model-Assisted Labeler")
     application.setOrganizationName("Model-Assisted Labeler")
+    # The native "windows11" style (Qt's default on Windows 11) renders
+    # combo box popups with DWM shadow/acrylic compositing that briefly
+    # shows ghosted content from behind the popup. Fusion draws its own
+    # popups and avoids that glitch.
+    application.setStyle("Fusion")
+    apply_theme(application)
 
     settings_repository = ApplicationSettingsRepository()
     workspace_root = _resolve_workspace_root(settings_repository)
@@ -180,7 +248,8 @@ def main() -> int:
         return 0
 
     try:
-        controller.open_session_definition(definition)
+        if not _open_session_with_progress(controller, definition):
+            return 0
     except Exception as error:
         QMessageBox.critical(
             None,

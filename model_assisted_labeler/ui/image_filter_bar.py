@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from model_assisted_labeler.models.annotation_session import ClassDefinition
+from model_assisted_labeler.models.class_definition import ClassDefinition
 
 
 class ImageFilterBar(QFrame):
@@ -223,23 +223,30 @@ class ImageFilterBar(QFrame):
             QSizePolicy.Policy.Preferred,
         )
         self._result_label.setMinimumWidth(130)
+        self._result_label.setProperty("muted", "true")
 
     def _build_layout(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
 
-        layout.addWidget(QLabel("Filter:"))
+        layout.addWidget(self._make_field_label("Filter:"))
         layout.addWidget(self._filter_combo)
         layout.addSpacing(10)
-        layout.addWidget(QLabel("Confidence:"))
+        layout.addWidget(self._make_field_label("Confidence:"))
         layout.addWidget(self._confidence_spin)
         layout.addWidget(self._confidence_help)
         layout.addSpacing(10)
-        layout.addWidget(QLabel("Class:"))
+        layout.addWidget(self._make_field_label("Class:"))
         layout.addWidget(self._class_combo)
         layout.addStretch(1)
         layout.addWidget(self._result_label)
+
+    @staticmethod
+    def _make_field_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setProperty("muted", "true")
+        return label
 
     def _connect_signals(self) -> None:
         self._filter_combo.currentIndexChanged.connect(

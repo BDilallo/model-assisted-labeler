@@ -16,7 +16,9 @@ from model_assisted_labeler.geometry.bounding_box_geometry import (
 )
 
 if TYPE_CHECKING:
-    from model_assisted_labeler.ui.bounding_box_item import BoundingBoxItem
+    from model_assisted_labeler.ui.canvas.bounding_box_item import (
+        BoundingBoxItem,
+    )
 
 
 class ResizeHandleItem(QGraphicsEllipseItem):

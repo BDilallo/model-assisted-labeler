@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 )
 
 from model_assisted_labeler.models.session_definition import SessionDefinition
-from model_assisted_labeler.services.session_repository import SessionRepository
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 
 
 class SessionLoadDialog(QDialog):
@@ -44,8 +46,12 @@ class SessionLoadDialog(QDialog):
         cancel_button = QPushButton("Back")
         cancel_button.clicked.connect(self.reject)
 
+        heading = QLabel("Open Sessions")
+        heading.setProperty("heading", "true")
+
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Open Sessions"))
+        layout.setSpacing(8)
+        layout.addWidget(heading)
         layout.addWidget(scroll_area, stretch=1)
         layout.addWidget(cancel_button)
 
@@ -71,6 +77,8 @@ class SessionLoadDialog(QDialog):
             self._tile_layout.addWidget(empty_label)
             return
 
+        self._tile_layout.setSpacing(8)
+
         for definition in sessions:
             self._tile_layout.addWidget(
                 self._create_session_tile(definition)
@@ -83,28 +91,34 @@ class SessionLoadDialog(QDialog):
         definition: SessionDefinition,
     ) -> QFrame:
         tile = QFrame()
-        tile.setFrameShape(QFrame.Shape.StyledPanel)
+        tile.setObjectName("sessionTile")
 
         name_label = QLabel(definition.name)
         name_label.setObjectName("sessionTileName")
+        name_label.setProperty("heading", "true")
 
         image_label = QLabel(
             f"Images: {definition.image_directory}"
         )
         image_label.setWordWrap(True)
+        image_label.setProperty("muted", "true")
 
         count_label = QLabel(
             "Annotated images: "
             f"{definition.total_images_annotated}"
         )
+        count_label.setProperty("muted", "true")
 
         details_layout = QVBoxLayout()
+        details_layout.setSpacing(3)
         details_layout.addWidget(name_label)
         details_layout.addWidget(image_label)
         details_layout.addWidget(count_label)
 
         open_button = QPushButton("Open")
+        open_button.setProperty("cta", "primary")
         delete_button = QPushButton("Delete Session")
+        delete_button.setProperty("cta", "destructive")
 
         open_button.clicked.connect(
             lambda checked=False, item=definition: self._open(item)
@@ -114,11 +128,13 @@ class SessionLoadDialog(QDialog):
         )
 
         button_layout = QVBoxLayout()
+        button_layout.setSpacing(6)
         button_layout.addWidget(open_button)
         button_layout.addWidget(delete_button)
         button_layout.addStretch(1)
 
         layout = QHBoxLayout(tile)
+        layout.setContentsMargins(14, 12, 14, 12)
         layout.addLayout(details_layout, stretch=1)
         layout.addLayout(button_layout)
         return tile

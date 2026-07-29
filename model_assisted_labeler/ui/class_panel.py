@@ -12,10 +12,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from model_assisted_labeler.controllers.annotation_controller import (
+from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
-from model_assisted_labeler.ui.image_canvas import ImageCanvas
+from model_assisted_labeler.ui.canvas.image_canvas import ImageCanvas
 
 
 class ClassPanel(QWidget):
@@ -134,6 +134,7 @@ class ClassPanel(QWidget):
 
     def _configure_widgets(self) -> None:
         self._title_label.setObjectName("classPanelTitle")
+        self._title_label.setProperty("heading", "true")
         self._class_list.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
@@ -142,17 +143,26 @@ class ClassPanel(QWidget):
         self._apply_class_button.setToolTip(
             "Change the selected box to the active drawing class."
         )
+        self._apply_class_button.setProperty("cta", "primary")
+        self._apply_class_button.setMinimumHeight(32)
+        self._delete_class_button.setProperty("cta", "destructive")
+
+        self._active_class_label.setProperty("muted", "true")
+        self._selected_box_label.setProperty("muted", "true")
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setSpacing(8)
         layout.addWidget(self._title_label)
         layout.addWidget(self._class_list, stretch=1)
 
         class_button_layout = QHBoxLayout()
+        class_button_layout.setSpacing(6)
         class_button_layout.addWidget(self._add_class_button)
         class_button_layout.addWidget(self._delete_class_button)
         layout.addLayout(class_button_layout)
 
+        layout.addSpacing(4)
         layout.addWidget(self._active_class_label)
         layout.addWidget(self._selected_box_label)
         layout.addWidget(self._apply_class_button)

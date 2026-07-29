@@ -5,6 +5,19 @@ from typing import Protocol
 from model_assisted_labeler.models.bounding_box import BoundingBox
 
 
+def cuda_is_available() -> bool:
+    """Return True when a CUDA-capable GPU is usable for inference."""
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    try:
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
 class DetectionModelRunner(Protocol):
     """
     Defines the behavior required from an object-detection runner.
@@ -47,6 +60,20 @@ class DetectionModelRunner(Protocol):
         """Run inference and return detected bounding boxes."""
         ...
 
+    def predict_batch(
+        self,
+        image_paths: list[Path],
+        confidence_threshold: float | None = None,
+        batch_size: int = 8,
+        device: str | int | None = None,
+    ) -> list[list[BoundingBox]]:
+        """Run inference on many images, batching the forward pass.
+
+        Returns one list of BoundingBox objects per input path, in the
+        same order as ``image_paths``.
+        """
+        ...
+
 
 class UltralyticsDetectionRunner:
     """
@@ -55,6 +82,8 @@ class UltralyticsDetectionRunner:
     Ultralytics-specific results are converted into the application's
     BoundingBox representation before they leave this class.
     """
+
+    DEFAULT_BATCH_SIZE = 8
 
     def __init__(
         self,
@@ -212,16 +241,9 @@ class UltralyticsDetectionRunner:
                 f"Image path is not a file: {image_path}"
             )
 
-        if confidence_threshold is None:
-            effective_threshold = self._confidence_threshold
-        else:
-            if not 0.0 <= confidence_threshold < 1.0:
-                raise ValueError(
-                    "Confidence threshold must be at least 0 and "
-                    "less than 1."
-                )
-
-            effective_threshold = float(confidence_threshold)
+        effective_threshold = self._resolve_threshold(
+            confidence_threshold
+        )
 
         try:
             results = self._model.predict(
@@ -239,12 +261,103 @@ class UltralyticsDetectionRunner:
         if not results:
             return []
 
-        result = results[0]
+        return self._convert_result(results[0])
 
+    def predict_batch(
+        self,
+        image_paths: list[Path],
+        confidence_threshold: float | None = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        device: str | int | None = None,
+    ) -> list[list[BoundingBox]]:
+        """
+        Run object detection on many images, batching the forward pass.
+
+        Passing every path to Ultralytics in one call (instead of one
+        ``predict()`` call per image) lets it group images into batches
+        for the GPU/CPU forward pass, which is substantially faster
+        than one-image-at-a-time inference for large image sets.
+
+        Returns:
+            One list of BoundingBox objects per input path, in the same
+            order as ``image_paths``.
+        """
+        if self._model is None:
+            raise RuntimeError(
+                "A detection model must be loaded before prediction."
+            )
+
+        if not image_paths:
+            return []
+
+        for image_path in image_paths:
+            if not Path(image_path).is_file():
+                raise FileNotFoundError(
+                    f"Image file does not exist: {image_path}"
+                )
+
+        if batch_size < 1:
+            raise ValueError("Batch size must be at least 1.")
+
+        effective_threshold = self._resolve_threshold(
+            confidence_threshold
+        )
+        effective_device = (
+            device if device is not None else self._device
+        )
+
+        try:
+            results = self._model.predict(
+                source=[str(path) for path in image_paths],
+                conf=effective_threshold,
+                device=effective_device,
+                batch=batch_size,
+                stream=True,
+                verbose=False,
+            )
+
+            predictions = [
+                self._convert_result(result) for result in results
+            ]
+
+        except Exception as error:
+            raise RuntimeError(
+                "Batch model prediction failed: "
+                f"{error}"
+            ) from error
+
+        if len(predictions) != len(image_paths):
+            raise RuntimeError(
+                "Batch prediction returned "
+                f"{len(predictions)} result(s) for "
+                f"{len(image_paths)} image(s)."
+            )
+
+        return predictions
+
+    def _resolve_threshold(
+        self,
+        confidence_threshold: float | None,
+    ) -> float:
+        if confidence_threshold is None:
+            return self._confidence_threshold
+
+        if not 0.0 <= confidence_threshold < 1.0:
+            raise ValueError(
+                "Confidence threshold must be at least 0 and "
+                "less than 1."
+            )
+
+        return float(confidence_threshold)
+
+    @staticmethod
+    def _convert_result(result) -> list[BoundingBox]:
+        """Convert one Ultralytics Results object into BoundingBoxes."""
         if result.boxes is None:
+            source_name = Path(result.path).name if result.path else "?"
             raise RuntimeError(
                 "The loaded model did not return standard "
-                "object-detection bounding boxes."
+                f"object-detection bounding boxes for: {source_name}"
             )
 
         image_height, image_width = result.orig_shape

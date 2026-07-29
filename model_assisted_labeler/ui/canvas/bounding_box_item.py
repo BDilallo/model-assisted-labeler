@@ -17,7 +17,19 @@ from model_assisted_labeler.geometry.bounding_box_geometry import (
     ResizeHandle,
 )
 from model_assisted_labeler.models.bounding_box import BoundingBox
-from model_assisted_labeler.ui.resize_handle_item import ResizeHandleItem
+from model_assisted_labeler.ui.canvas.resize_handle_item import (
+    ResizeHandleItem,
+)
+
+
+def _readable_text_color(background: QColor) -> QColor:
+    """Return black or white, whichever contrasts with a background."""
+    luminance = (
+        0.299 * background.red()
+        + 0.587 * background.green()
+        + 0.114 * background.blue()
+    )
+    return QColor(20, 20, 20) if luminance > 150 else QColor(245, 245, 245)
 
 
 class BoundingBoxItem(QGraphicsRectItem):
@@ -229,17 +241,24 @@ class BoundingBoxItem(QGraphicsRectItem):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(self.rect())
 
+        label_color = self.pen().color()
+        font_metrics = painter.fontMetrics()
+        text_size = font_metrics.size(Qt.TextFlag.TextSingleLine, self._class_name)
+        label_rect = QRectF(
+            self.rect().left(),
+            self.rect().top(),
+            min(text_size.width() + 12.0, self.rect().width()),
+            min(text_size.height() + 6.0, self.rect().height()),
+        )
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(label_color)
+        painter.drawRoundedRect(label_rect, 3.0, 3.0)
+
+        painter.setPen(QPen(_readable_text_color(label_color)))
         painter.drawText(
-            self.rect().adjusted(
-                6.0,
-                4.0,
-                -6.0,
-                -4.0,
-            ),
-            (
-                Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignTop
-            ),
+            label_rect,
+            Qt.AlignmentFlag.AlignCenter,
             self._class_name,
         )
 

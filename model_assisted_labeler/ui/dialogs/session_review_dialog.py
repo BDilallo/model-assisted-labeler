@@ -15,11 +15,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from model_assisted_labeler.controllers.annotation_controller import (
+from model_assisted_labeler.controllers.application_controller import (
     AnnotationController,
 )
 from model_assisted_labeler.models.session_definition import SessionDefinition
-from model_assisted_labeler.services.session_repository import SessionRepository
+from model_assisted_labeler.repositories.session_repository import (
+    SessionRepository,
+)
 
 
 class SessionReviewDialog(QDialog):
@@ -57,6 +59,7 @@ class SessionReviewDialog(QDialog):
 
         name_label = QLabel(self._definition.name)
         name_label.setObjectName("sessionReviewName")
+        name_label.setProperty("heading", "true")
         layout.addWidget(name_label)
 
         explanation = QLabel(
@@ -65,6 +68,7 @@ class SessionReviewDialog(QDialog):
             "read-only and subfolders are not searched."
         )
         explanation.setWordWrap(True)
+        explanation.setProperty("muted", "true")
         layout.addWidget(explanation)
 
         form = QFormLayout()
@@ -105,12 +109,19 @@ class SessionReviewDialog(QDialog):
         count_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        count_label.setProperty("muted", "true")
         layout.addWidget(count_label)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Open
             | QDialogButtonBox.StandardButton.Cancel
         )
+        open_button = buttons.button(QDialogButtonBox.StandardButton.Open)
+
+        if open_button is not None:
+            open_button.setProperty("cta", "primary")
+            open_button.setMinimumHeight(32)
+
         layout.addWidget(buttons)
 
         image_browse.clicked.connect(self._browse_image_directory)
